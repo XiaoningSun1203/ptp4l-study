@@ -72,6 +72,8 @@ struct port {
 	int phc_index;
 	int phc_from_cmdline;
 
+    int nonforwardable;
+
 	void (*dispatch)(struct port *p, enum fsm_event event, int mdiff);
 	enum fsm_event (*event)(struct port *p, int fd_index);
 

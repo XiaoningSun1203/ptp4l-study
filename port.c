@@ -45,8 +45,18 @@
 #include "unicast_service.h"
 #include "util.h"
 
+#include "timestamp_get.h"
+
 #define ALLOWED_LOST_RESPONSES 3
 #define ANNOUNCE_SPAN 1
+
+#include <time.h>
+#define MAX_STORE_COUNT 1000
+static struct ptp_message *ptp_msg_history[MAX_STORE_COUNT];
+static int ptp_msg_next_pos = 0;
+static int ptp_msg_array_full = false;
+void recordOnePtpMessage(struct ptp_message *msg);
+void printPtpMessagesToFile(const char *cause);
 
 enum syfu_event {
 	SYNC_MISMATCH,
@@ -803,6 +813,7 @@ static int port_management_fill_response(struct port *target,
 	struct tlv_extra *extra;
 	const char *ts_label;
 	struct portDS *pds;
+	struct ptp_source_status_list aml;
 	uint16_t u16;
 	uint8_t *buf;
 	int datalen;
@@ -1173,6 +1184,21 @@ static void port_synchronize(struct port *p,
 {
 	enum servo_state state, last_state;
 	tmv_t t1, t1c, t2, c1, c2;
+	static bool enFirst = true;
+        if (p->logSyncInterval > sync_interval)
+	{
+		if (enFirst)
+		{
+			pr_warning("sync_interval(%d) out of range, will not adjust\n", sync_interval);
+			enFirst = false;
+		}
+
+		return;
+	}
+	else
+	{
+		enFirst = true;
+	}
 
 	port_set_sync_rx_tmo(p);
 
@@ -1195,6 +1221,10 @@ static void port_synchronize(struct port *p,
 
 	last_state = clock_servo_state(p->clock);
 	state = clock_synchronize(p->clock, t2, t1c);
+	if (last_state != state)//Z
+	{
+		pr_info("%d=>%d", last_state, state);
+	}
 	switch (state) {
 	case SERVO_UNLOCKED:
 		port_dispatch(p, EV_SYNCHRONIZATION_FAULT, 0);
@@ -1436,10 +1466,18 @@ int port_delay_request(struct port *p)
 		pr_err("%s: send delay request failed", p->log_name);
 		goto out;
 	}
-	if (msg_sots_missing(msg)) {
-		pr_err("missing timestamp on transmitted delay request");
-		goto out;
-	}
+
+#ifdef PROT_STACK_FROM_FPGA
+	/*************add by user LQ-20210621********************************/
+	msg->hwts.ts.ns = timestamp_dlyreq_get();
+    /********************************************/
+#endif
+        if (msg_sots_missing(msg)) {
+                pr_err("missing timestamp on transmitted delay request");
+                goto out;
+        }
+
+	recordOnePtpMessage(msg);
 
 	TAILQ_INSERT_HEAD(&p->delay_req, msg, list);
 
@@ -2742,6 +2780,7 @@ static enum fsm_event bc_event(struct port *p, int fd_index)
 
 	switch (msg_type(msg)) {
 	case SYNC:
+		clock_set_ptp_source_in_sync_msg(p->clock, msg->sync);
 		process_sync(p, msg);
 		break;
 	case DELAY_REQ:
@@ -2766,6 +2805,7 @@ static enum fsm_event bc_event(struct port *p, int fd_index)
 		process_pdelay_resp_fup(p, msg);
 		break;
 	case ANNOUNCE:
+		clock_set_ptp_source_in_announce_msg(p->clock, msg->announce);
 		if (process_announce(p, msg))
 			event = EV_STATE_DECISION_EVENT;
 		break;
@@ -2779,6 +2819,8 @@ static enum fsm_event bc_event(struct port *p, int fd_index)
 			event = EV_STATE_DECISION_EVENT;
 		break;
 	}
+
+	recordOnePtpMessage(msg);
 
 	msg_put(msg);
 	return event;
@@ -2819,7 +2861,14 @@ int port_prepare_and_send(struct port *p, struct ptp_message *msg,
 	if (msg_unicast(msg)) {
 		cnt = transport_sendto(p->trp, &p->fda, event, msg);
 	} else {
-		cnt = transport_send(p->trp, &p->fda, event, msg);
+		if (p->nonforwardable)
+		{
+			cnt = transport_peer(p->trp, &p->fda, event, msg);
+		}
+		else
+		{
+			cnt = transport_send(p->trp, &p->fda, event, msg);
+		}
 	}
 	if (cnt <= 0) {
 		return -1;
@@ -3146,6 +3195,7 @@ struct port *port_open(const char *phc_device,
 		goto err_uc_client;
 	}
 	p->hybrid_e2e = config_get_int(cfg, p->name, "hybrid_e2e");
+        p->nonforwardable = config_get_int(cfg, p->name, "nonforwardable");
 
 	if (!port_is_uds(p) && type == CLOCK_TYPE_P2P &&
 	    p->delayMechanism != DM_P2P) {
@@ -3250,6 +3300,13 @@ int port_state_update(struct port *p, enum fsm_event event, int mdiff)
 		unicast_client_state_changed(p);
 	}
 	if (next != p->state) {
+		if (p->state == PS_SLAVE)//Case 1, the ptp is going to UNLOCK.
+		{
+			printPtpMessagesToFile("Unlock");
+			ptp_msg_next_pos = 0;
+			ptp_msg_array_full = false;
+		}
+
 		port_show_transition(p, next, event);
 		p->state = next;
 		port_notify_event(p, NOTIFY_PORT_STATE);
@@ -3258,6 +3315,123 @@ int port_state_update(struct port *p, enum fsm_event event, int mdiff)
 	}
 
 	return 0;
+}
+
+void recordOnePtpMessage(struct ptp_message *msg)
+{
+	if (ptp_msg_history[ptp_msg_next_pos])
+	{
+		msg_put(ptp_msg_history[ptp_msg_next_pos]);
+	}
+	ptp_msg_history[ptp_msg_next_pos] = msg;
+	msg_get(msg);//aviod memory be free. Note, should call msg_put when overwrite or clear.
+
+	ptp_msg_next_pos++;
+	if(ptp_msg_array_full == false && ptp_msg_next_pos >= MAX_STORE_COUNT)//Case 2, the ptp msg buff First time to full.
+	{
+		printPtpMessagesToFile("First time to full.");
+		ptp_msg_array_full = true;
+		ptp_msg_next_pos = 0;
+	}
+	ptp_msg_next_pos %= MAX_STORE_COUNT;
+}
+
+void printPtpMessagesToFile(const char *cause)
+{
+	FILE *fp;
+	fp = fopen("/var/log/psislog/ptp_messages.txt", "a");
+	if (!fp) {
+		fprintf(stderr, "failed to open file when dump ptp message\n");
+		return;
+	}
+
+	int length = 0;
+	if (ptp_msg_array_full == true && ptp_msg_history[ptp_msg_next_pos])
+	{
+		length = MAX_STORE_COUNT;
+	}
+	else
+	{
+		length = ptp_msg_next_pos;
+	}
+	time_t current_ts = time(NULL);
+	fprintf(fp, "\n\nTime:%s Cause:%s, total %u items\n", ctime(&current_ts), cause, length);
+	for (int i = 0; i < MAX_STORE_COUNT; i++) {//ptp_msg_count
+		int ptp_msg_seq_index = i;
+		if (ptp_msg_array_full == true && ptp_msg_history[ptp_msg_next_pos])
+		{
+			ptp_msg_seq_index = (ptp_msg_next_pos + i) % MAX_STORE_COUNT;
+		}
+
+		if (!ptp_msg_history[ptp_msg_seq_index])
+		{
+			break;
+		}
+
+		if (msg_type(ptp_msg_history[ptp_msg_seq_index]) == DELAY_REQ)
+		{
+			fprintf(fp, "%4u msg:%10s seqId:%5u hwts(t2/t3):%10u pdu(t1/t4):%10u host:%10u corr:%10d, DN:%u inter:%d port:%d\n",
+				i,
+				msg_type_string(msg_type(ptp_msg_history[ptp_msg_seq_index])),
+				ntohs(ptp_msg_history[ptp_msg_seq_index]->header.sequenceId),
+				ptp_msg_history[ptp_msg_seq_index]->hwts.ts.ns,
+				ptp_msg_history[ptp_msg_seq_index]->ts.pdu.sec * 1000000000 + ptp_msg_history[ptp_msg_seq_index]->ts.pdu.nsec,
+				ptp_msg_history[ptp_msg_seq_index]->ts.host.tv_sec * 1000000000 + ptp_msg_history[ptp_msg_seq_index]->ts.host.tv_nsec,
+				ptp_msg_history[ptp_msg_seq_index]->header.correction,/*unit: 1/2^16 ns*/
+				ptp_msg_history[ptp_msg_seq_index]->header.domainNumber,
+				ptp_msg_history[ptp_msg_seq_index]->header.logMessageInterval,
+				ntohs(ptp_msg_history[ptp_msg_seq_index]->header.sourcePortIdentity.portNumber));
+		}
+		else
+		{
+			fprintf(fp, "%4u msg:%10s seqId:%5u hwts(t2/t3):%10u pdu(t1/t4):%10u host:%10u corr:%10d, DN:%u inter:%d port:%d\n",
+				i,
+				msg_type_string(msg_type(ptp_msg_history[ptp_msg_seq_index])),
+				ptp_msg_history[ptp_msg_seq_index]->header.sequenceId,
+				ptp_msg_history[ptp_msg_seq_index]->hwts.ts.ns,
+				ptp_msg_history[ptp_msg_seq_index]->ts.pdu.sec * 1000000000 + ptp_msg_history[ptp_msg_seq_index]->ts.pdu.nsec,
+				ptp_msg_history[ptp_msg_seq_index]->ts.host.tv_sec * 1000000000 + ptp_msg_history[ptp_msg_seq_index]->ts.host.tv_nsec,
+				ptp_msg_history[ptp_msg_seq_index]->header.correction,/*unit: 1/2^16 ns*/
+				ptp_msg_history[ptp_msg_seq_index]->header.domainNumber,
+				ptp_msg_history[ptp_msg_seq_index]->header.logMessageInterval,
+				ptp_msg_history[ptp_msg_seq_index]->header.sourcePortIdentity.portNumber);
+		}
+
+		switch (msg_type(ptp_msg_history[ptp_msg_seq_index])) {
+			/*case SYNC:
+				fprintf(fp, "\tsync t2:%lu\n", ptp_msg_history[ptp_msg_seq_index]->hwts.ts.ns);
+				break;
+			case DELAY_REQ:
+				fprintf(fp, "\tdelay_req t3:%lu\n", ptp_msg_history[ptp_msg_seq_index]->hwts.ts.ns);
+				break;
+			case FOLLOW_UP:
+				fprintf(fp, "\tfollow_up t1:%lu.%u\n", ptp_msg_history[ptp_msg_seq_index]->ts.pdu.sec, ptp_msg_history[ptp_msg_seq_index]->ts.pdu.nsec);
+				break;
+			case DELAY_RESP:
+				fprintf(fp, "\tdelay_resp t4:%lu.%u\n", ptp_msg_history[ptp_msg_seq_index]->ts.pdu.sec, ptp_msg_history[ptp_msg_seq_index]->ts.pdu.nsec);
+				break;*/
+			case ANNOUNCE:
+				fprintf(fp, "\tUtcOffset:%d gmPri1:%u gmPri2:%u stepsRemoved:%u timeSrc:%u\n",
+							ptp_msg_history[ptp_msg_seq_index]->announce.currentUtcOffset,
+							ptp_msg_history[ptp_msg_seq_index]->announce.grandmasterPriority1,
+							ptp_msg_history[ptp_msg_seq_index]->announce.grandmasterPriority2,
+							ptp_msg_history[ptp_msg_seq_index]->announce.stepsRemoved,
+							ptp_msg_history[ptp_msg_seq_index]->announce.timeSource);
+
+				fprintf(fp, "\tgmClockQlt clockCls:%u clockAccuracy:%u\n",
+							ptp_msg_history[ptp_msg_seq_index]->announce.grandmasterClockQuality.clockClass,
+							ptp_msg_history[ptp_msg_seq_index]->announce.grandmasterClockQuality.clockAccuracy);
+
+				fprintf(fp, "\tgmId:%s\n", cid2str(&ptp_msg_history[ptp_msg_seq_index]->announce.grandmasterIdentity));
+
+				break;
+		}
+
+        msg_put(ptp_msg_history[ptp_msg_seq_index]);
+        ptp_msg_history[ptp_msg_seq_index] = NULL;
+	}
+
+	fclose(fp);
 }
 
 enum bmca_select port_bmca(struct port *p)

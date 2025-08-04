@@ -419,7 +419,7 @@ int ts2phc_slave_poll(struct ts2phc_master *master)
 			return -1;
 		}
 	} else if (!cnt) {
-		pr_debug("poll returns zero, no events");
+		pr_warning("poll returns zero, no events");
 		return 0;
 	}
 

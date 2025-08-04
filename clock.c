@@ -80,32 +80,32 @@ struct clock_subscriber {
 };
 
 struct clock {
-	enum clock_type type;
-	struct config *config;
-	clockid_t clkid;
-	struct servo *servo;
-	enum servo_type servo_type;
-	int (*dscmp)(struct dataset *a, struct dataset *b);
-	struct defaultDS dds;
-	struct dataset default_dataset;
-	struct currentDS cur;
-	struct parent_ds dad;
-	struct timePropertiesDS tds;
+	enum clock_type type;  // 这个实例是什么角色：OC/BC/TC（普通钟/边界钟/透明钟）
+	struct config *config;  // 配置总表：所有你 conf/CLI 设置的东西都在这里
+	clockid_t clkid;  // 你要调哪个钟：通常是 PHC（/dev/ptpX 的 clockid），或者 CLOCK_REALTIME，free-running 时可能无效。
+	struct servo *servo;  // 锁定控制器对象：输入 offset/delay，输出调频/step 决策。
+	enum servo_type servo_type;  // servo 是哪一种算法：比如 PI、linreg、ntpshm 等
+	int (*dscmp)(struct dataset *a, struct dataset *b);  // 数据集比较函数指针：BMC 比较时用哪个规则（普通 1588 vs G.8275 telecom 比较）
+	struct defaultDS dds;  // Default Dataset：clockIdentity、clockClass、priority1/2、domainNumber、twoStepFlag 等——最核心的“简历”。
+	struct dataset default_dataset;  // 本地默认数据集的封装版本：通常用于统一比较/发布（实现细节上比 dds 更“通用结构”）。
+	struct currentDS cur;  // Current Dataset：当前同步状态相关，比如 stepsRemoved、offsetFromMaster 等（“我现在跟 GM 的关系怎样”）
+	struct parent_ds dad;  // Parent Dataset：我当前的“上游父节点/GM 是谁”的信息（被谁同步、上游属性）。
+	struct timePropertiesDS tds;  // 时间属性：UTC offset、闰秒、timescale（TAI/PTP/UTC）等（时间语义）。  
 	struct ClockIdentity ptl[PATH_TRACE_MAX];
-	struct foreign_clock *best;
-	struct ClockIdentity best_id;
+	struct foreign_clock *best;  // 当前选出来的“最佳外来时钟”对象（收到的 Announce 们里最强的那个）。
+	struct ClockIdentity best_id;  // best 的 clockIdentity（快速比对/记录）
 	LIST_HEAD(ports_head, port) ports;
 	struct port *uds_rw_port;
 	struct port *uds_ro_port;
 	struct pollfd *pollfd;
 	int pollfd_valid;
 	int nports; /* does not include the two UDS ports */
-	int last_port_number;
+	int last_port_number;  // 端口编号分配器：新建 port 时用来给 portNumber。
 	int sde;
-	int free_running;
-	int freq_est_interval;
-	int local_sync_uncertain;
-	int write_phase_mode;
+	int free_running;  // 是否“只算不调”：free_running=1 时基本不去真正调整时钟（相当于只监听/统计）
+	int freq_est_interval;  // 多久估一次频偏：用于频率估计/稳定性判断（让 servo 更平稳）。
+	int local_sync_uncertain;  // 本地同步不确定性标志：遇到抖动/异常时告诉系统“我现在可能不靠谱”（不同版本用途略不同）
+	int write_phase_mode;  // 用不用“相位直接写入”：某些 PHC 驱动支持 writephase，可以更直接地修相位（更快/更干净）
 	int grand_master_capable; /* for 802.1AS only */
 	int utc_timescale;
 	int utc_offset_set;
@@ -114,16 +114,16 @@ struct clock {
 	int utc_offset;
 	int time_flags;  /* grand master role */
 	int time_source; /* grand master role */
-	UInteger8 clock_class_threshold;
-	UInteger8 max_steps_removed;
-	enum servo_state servo_state;
-	enum timestamp_type timestamping;
-	tmv_t master_offset;
-	tmv_t path_delay;
-	tmv_t ingress_ts;
-	tmv_t initial_delay;
-	struct tsproc *tsproc;
-	struct freq_estimator fest;
+	UInteger8 clock_class_threshold;  // clockClass 门槛：选主/接受上游时的阈值策略（telecom profile 常用）。
+	UInteger8 max_steps_removed;  // stepsRemoved 上限：路径太“长”的 GM 可能拒绝（避免层级太深）
+	enum servo_state servo_state;  // 当前锁定状态：未锁/锁定/需要 step/刚 step（具体枚举看版本）
+	enum timestamp_type timestamping;  // 时间戳模式：硬件/软件/legacy 硬件/1step/2step。
+	tmv_t master_offset;  // 我比 master 差多少（offset，servo 最核心输入）
+	tmv_t path_delay;  // 链路时延估计（delay，用于校正 offset）
+	tmv_t ingress_ts;  // 最近一次收到包的入口时间戳（你可以理解成“这次测量的本地时间点”）。
+	tmv_t initial_delay;  // 启动时的初始 delay（在还没估出来稳定 delay 前先用一个“垫底值”）
+	struct tsproc *tsproc;  // 时间戳处理器：对 raw timestamp 做滤波、去毛刺、算 delay，给 servo 提供更干净的输入。
+	struct freq_estimator fest;  // 频率估计器的内部状态：servo 或统计用它来估“我现在快慢多少”。
 	struct time_status_np status;
 	double master_local_rr; /* maintained when free_running */
 	double nrr;
@@ -135,8 +135,9 @@ struct clock {
 	struct interface *uds_ro_if;
 	LIST_HEAD(clock_subscribers_head, clock_subscriber) subscribers;
 	struct monitor *slave_event_monitor;
-	int step_window_counter;
+	int step_window_counter;  // 启动后前 N 个 sync 里允许大步跳一下，过了窗口就尽量只 slewing（调频慢慢追）
 	int step_window;
+	struct ptp_source_status_list aml;  // PTP 源状态列表,保存目前看到的候选源/状态（用于管理查询、监控、切换决策等）
 };
 
 struct clock the_clock;
@@ -382,6 +383,13 @@ static int clock_management_fill_response(struct clock *c, struct port *p,
 		memcpy(tlv->data, &c->dad.pds, sizeof(c->dad.pds));
 		datalen = sizeof(c->dad.pds);
 		break;
+	case TLV_PTP_SOURCE_STATUS_LIST:
+		memcpy(tlv->data, &c->aml, sizeof(c->aml));
+		datalen = sizeof(c->aml);
+		//pr_info("BR-DEBUG: get GET message from clock_management_fill_response");
+    	//pr_info("BR-DEBUG: pri1=%d, flag0=%d, flag1=%d, stepsRemoved=%d", c->aml.pri1, c->aml.annMsgFlagField[0], c->aml.annMsgFlagField[1], c->aml.stepsRemoved);
+	    //pr_info("BR-DEBUG: pri2=%d, currentUtcOffset=%d", c->aml.pri2, c->aml.currentUtcOffset);
+		break;
 	case TLV_TIME_PROPERTIES_DATA_SET:
 		memcpy(tlv->data, &c->tds, sizeof(c->tds));
 		datalen = sizeof(c->tds);
@@ -560,6 +568,11 @@ static void clock_stats_update(struct clock_stats *s,
 	stats_add_value(s->offset, offset);
 	stats_add_value(s->freq, freq);
 
+	if (freq != 0)//Z
+		pr_debug("offset|freq:%6.0f|%6.0f", offset, freq);
+	else
+		pr_debug("offset:%6.0f", offset);
+
 	if (stats_get_num_values(s->offset) < s->max_count)
 		return;
 
@@ -572,20 +585,66 @@ static void clock_stats_display(struct clock_stats *s)
 
 	stats_get_result(s->offset, &offset_stats);
 	stats_get_result(s->freq, &freq_stats);
+	static uint32_t printCountWhenLock = 0;
+	static int _printEn = -1;
+	const uint32_t maxPrintTimes = 20;
 
-	/* Path delay stats are updated separately, they may be empty. */
-	if (!stats_get_result(s->delay, &delay_stats)) {
-		pr_info("rms %4.0f max %4.0f "
-			"freq %+6.0f +/- %3.0f "
-			"delay %5.0f +/- %3.0f",
-			offset_stats.rms, offset_stats.max_abs,
-			freq_stats.mean, freq_stats.stddev,
-			delay_stats.mean, delay_stats.stddev);
-	} else {
-		pr_info("rms %4.0f max %4.0f "
-			"freq %+6.0f +/- %3.0f",
-			offset_stats.rms, offset_stats.max_abs,
-			freq_stats.mean, freq_stats.stddev);
+	if (_printEn == -1)//only get ont time
+	{
+		_printEn = config_get_int(the_clock.config, NULL, "printEn");
+	}
+
+	bool enNeedPrint = false;
+	if (!_printEn)//only print 20 times after max_abs less than 100.
+	{
+		if (printCountWhenLock == 0)
+		{
+			if (offset_stats.max_abs < 100)
+			{
+				printCountWhenLock = 1;
+			}
+		}
+		else
+		{
+			if (offset_stats.max_abs < 100)
+			{
+				if (printCountWhenLock < maxPrintTimes)
+				{
+					printCountWhenLock++;
+				}
+			}
+			else
+			{
+				printCountWhenLock = 0;
+			}
+		}
+
+		if (printCountWhenLock < maxPrintTimes)
+		{
+			enNeedPrint = true;
+		}
+	}
+	else
+	{
+		enNeedPrint = true;
+	}
+
+	if (enNeedPrint)
+	{
+		/* Path delay stats are updated separately, they may be empty. */
+		if (!stats_get_result(s->delay, &delay_stats)) {
+			pr_info("rms %4.0f max %4.0f "
+				"freq %+6.0f +/- %3.0f "
+				"delay %5.0f +/- %3.0f ",
+				offset_stats.rms, offset_stats.max_abs,
+				freq_stats.mean, freq_stats.stddev,
+				delay_stats.mean, delay_stats.stddev);
+		} else {
+			pr_info("rms %4.0f max %4.0f "
+				"freq %+6.0f +/- %3.0f ",
+				offset_stats.rms, offset_stats.max_abs,
+				freq_stats.mean, freq_stats.stddev);
+		}
 	}
 
 	stats_reset(s->offset);
@@ -821,6 +880,13 @@ struct currentDS *clock_current_dataset(struct clock *c)
 	return &c->cur;
 }
 
+// 创建一个 struct port
+// 打开 socket（L2/L4）
+// 绑定接口（eth0）
+// 设置时间戳模式
+// 注册定时器
+// 加入 pollfd
+// 关联回这个 clock
 static int clock_add_port(struct clock *c, const char *phc_device,
 			  int phc_index, enum timestamp_type timestamping,
 			  struct interface *iface)
@@ -892,9 +958,14 @@ int clock_required_modes(struct clock *c)
 	return required_modes;
 }
 
+// clock_create() 的作用就是：
+// 把“配置”变成一个可以运行的 PTP 时钟实例(ptp4l 进程里通常只有一个 clock 实例)：选定要锁的时钟（PHC/系统时钟）、创建 servo/tsproc、创建所有端口（含 UDS 管理端口）,
+// 然后触发端口状态机开始运行.
+// 确定类型 → 填默认数据集 → 校验网卡时间戳能力 → 选 PHC → 打开时钟并建 servo → 建 tsproc/stats → 建 UDS 管理端口 → 建业务端口 → 触发端口状态机初始化.
 struct clock *clock_create(enum clock_type type, struct config *config,
 			   const char *phc_device)
 {
+// 1) 选 servo 类型 + 一些局部变量
 	enum servo_type servo = config_get_int(config, NULL, "clock_servo");
 	char ts_label[IF_NAMESIZE], phc[32], *tmp;
 	enum timestamp_type timestamping;
@@ -908,13 +979,16 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 	struct timespec ts;
 	int sfl;
 
+//step2: 初始化随机数 + 如果已有 ports 就先销毁（重建场景）
 	clock_gettime(CLOCK_REALTIME, &ts);
-	srandom(ts.tv_sec ^ ts.tv_nsec);
+	// 避免多个 PTP 实例行为完全同步导致的网络冲突和选主震荡。
+	srandom(ts.tv_sec ^ ts.tv_nsec);  // 目的：避免“所有设备同一时刻做同一件事”。当前时间秒XOR当前时间纳秒，保证不同进程不一样。random 不参与时间计算，不影响锁定精度。
 
 	if (c->nports) {
 		clock_destroy(c);
 	}
 
+//step3: 校验并设置 clock 类型（OC/BC/TC
 	switch (type) {
 	case CLOCK_TYPE_ORDINARY:
 	case CLOCK_TYPE_BOUNDARY:
@@ -926,7 +1000,12 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 		return NULL;
 	}
 
-	/* Initialize the defaultDS. */
+//step4: 初始化 defaultDS .defaultDS = 我这台 PTP 设备的“个人档案”,用来告诉网络里的其他设备：“我是谁？我多准？我优先级多少？我能不能当 GM？”
+	// 	这些字段直接参与 BMC 比较（时钟源选择）：
+	//  clockClass/accuracy/variance/priority1/priority2/localPriority 是 announce 里带出去的“我的档案”。
+	//  domainNumber 决定你跟谁在同一个 PTP 域里选主。
+	//  clock_class_threshold/maxStepsRemoved 会影响选主/可接受 GM 的规则（看你们配置）。
+	/* Initialize the defaultDS（Default Data Set）. */
 	c->dds.clockQuality.clockClass =
 		config_get_int(config, NULL, "clockClass");
 	c->dds.clockQuality.clockAccuracy =
@@ -964,24 +1043,29 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 
 	c->dds.domainNumber = config_get_int(config, NULL, "domainNumber");
 
-	if (config_get_int(config, NULL, "clientOnly")) {
+	// 4-2) 处理 clientOnly / gmCapable（决定你能不能当 GM）
+	//  这段直接影响“时钟源寻找”：你会看到 BMC 算法用这些字段来比较。
+	if (config_get_int(config, NULL, "clientOnly")) {  // 	clientOnly：你永远不参选 GM（只当 slave）。
 		c->dds.flags |= DDS_SLAVE_ONLY;
 	}
-	if (!config_get_int(config, NULL, "gmCapable") &&
+	if (!config_get_int(config, NULL, "gmCapable") &&  //  gmCapable：802.1AS 语义里是否允许做 GM。
 	    c->dds.flags & DDS_SLAVE_ONLY) {
 		pr_err("Cannot mix 1588 clientOnly with 802.1AS !gmCapable");
 		return NULL;
 	}
 	if (!config_get_int(config, NULL, "gmCapable") ||
 	    c->dds.flags & DDS_SLAVE_ONLY) {
-		c->dds.clockQuality.clockClass = 255;
+		c->dds.clockQuality.clockClass = 255;  //  如果不能当 GM，会把 clockClass 设成 255（基本等于“别选我当 GM”）。
 	}
 	c->default_dataset.localPriority =
 		config_get_int(config, NULL, "G.8275.defaultDS.localPriority");
 	c->max_steps_removed = config_get_int(config, NULL,"maxStepsRemoved");
 	c->clock_class_threshold = config_get_int(config, NULL, "clock_class_threshold");
 
-	/* Harmonize the twoStepFlag with the time_stamping option. */
+    // 4-3) 确保 “one-step / two-step 模式” 和 “时间戳方式（硬件/软件）” 是一致且可行的。保证配置不会自相矛盾.
+	// Two-step（最常见）:几乎所有硬件支持. 'twoStepFlag'==1,可以不用管'time_stamping'是hardware还是software.
+	// One-step:必须硬件支持 on-the-fly 时间戳修改. 'twoStepFlag'==0,'time_stamping'不能是software.
+	/* Harmonize the 'twoStepFlag' with the 'time_stamping' option. */
 	if (config_harmonize_onestep(config)) {
 		return NULL;
 	}
@@ -998,6 +1082,11 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 	c->dds.priority1 = config_get_int(config, NULL, "priority1");
 	c->dds.priority2 = config_get_int(config, NULL, "priority2");
 
+//step5: 检查每个接口是否支持你要求的 timestamp 模式
+	// 	这一段是“启动前把坑踩完”：
+	// 通过 ethtool/netlink 拿每块网卡的时间戳能力（硬件/软件/one-step 等）。
+	// 如果任何接口不支持你要求的模式，直接退出。
+	// 这对LOCK也很关键：时间戳模式不对，offset/delay 会漂，servo 很难 lock。
 	/* Check the time stamping mode on each interface. */
 	c->timestamping = timestamping;
 	required_modes = clock_required_modes(c);
@@ -1017,15 +1106,22 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 
 	iface = STAILQ_FIRST(&config->interfaces);
 
+//step6 选择 PHC（/dev/ptpX）索引：决定你锁哪块硬件钟
+	// 	逻辑总结:
+	// 你要找“本地需要被调的时钟源是哪个设备”：就是这里决定的。
 	/* determine PHC Clock index */
+	// free_running：不去调任何时钟（不锁），所以 phc_index=-1。
 	if (config_get_int(config, NULL, "free_running")) {
 		phc_index = -1;
+	// software/legacy：没有可用 PHC，后面会走 CLOCK_REALTIME 或不调。
 	} else if (timestamping == TS_SOFTWARE || timestamping == TS_LEGACY_HW) {
 		phc_index = -1;
+	// 如果用户显式 -p /dev/ptp0：用它。
 	} else if (phc_device) {
 		if (1 != sscanf(phc_device, "/dev/ptp%d", &phc_index)) {
 			phc_index = -1;
 		}
+	// 否则从第一个接口自动推断它绑定的 PHC index。推断不出来就报错。
 	} else if (interface_tsinfo_valid(iface)) {
 		phc_index = interface_phc_index(iface);
 	} else {
@@ -1034,9 +1130,13 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 		return NULL;
 	}
 	if (phc_index >= 0) {
-		pr_info("selected /dev/ptp%d as PTP clock", phc_index);
+		pr_info("selected /dev/ptp%d as PTP clock", phc_index);  // <----------------------第一条打印
 	}
 
+//step7: 设置 clockIdentity（参与 announce + BMC）
+    // clockIdentity 是一个 8 字节的唯一标识，用来区分每一台 PTP 设备。
+	// MAC: aa:bb:cc:dd:ee:ff
+	// 生成 clockIdentity: aa:bb:cc:ff:fe:dd:ee:ff  中间插入 FF:FE，变成 8 字节。
 	if (strcmp(config_get_string(config, NULL, "clockIdentity"),
 		   "000000.0000.000000") == 0) {
 		if (generate_clock_identity(&c->dds.clockIdentity,
@@ -1052,6 +1152,15 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 		}
 	}
 
+//step8 配置 UDS（Unix Domain Socket）“管理端口”
+	// 假设：
+	//    网络端口 = 你对外说话的嘴巴
+	//    UDS 端口 = 你和自己系统内部沟通的“耳机接口”
+
+	// 网络端口用于：发 Announce发 Sync收 Delay_Resp
+
+	// UDS 用于：本机查询,管理命令,监控
+	// 这里创建了两个 interface：rw/ro,这是给 pmc / 管理客户端用的本地管理通道。为了让 UDS 不参与普通 PTP 选主/定时器行为，把 announceReceiptTimeout=0 等设置得很“无害”。
 	/* Configure the UDS. */
 
 	uds_ifname = config_get_string(config, NULL, "uds_address");
@@ -1092,22 +1201,29 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 		return NULL;
 	}
 
+//step9 把一堆运行参数塞进 clock 对象
 	c->config = config;
 	c->free_running = config_get_int(config, NULL, "free_running");
 	c->freq_est_interval = config_get_int(config, NULL, "freq_est_interval");
 	c->local_sync_uncertain = SYNC_UNCERTAIN_DONTCARE;
-	c->write_phase_mode = config_get_int(config, NULL, "write_phase_mode");
+	c->write_phase_mode = config_get_int(config, NULL, "write_phase_mode");  // write_phase_mode：是否使用驱动的 writephase（相位写入）能力。
 	c->grand_master_capable = config_get_int(config, NULL, "gmCapable");
-	c->kernel_leap = config_get_int(config, NULL, "kernel_leap");
+	c->kernel_leap = config_get_int(config, NULL, "kernel_leap");  // kernel_leap/utc_offset/utc_timescale/time_flags：决定你发布的 timescale（TAI/PTP vs UTC）以及闰秒相关。
 	c->utc_offset = config_get_int(config, NULL, "utc_offset");
 	c->time_source = config_get_int(config, NULL, "timeSource");
-	c->step_window = config_get_int(config, NULL, "step_window");
+	c->step_window = config_get_int(config, NULL, "step_window");  // step_window：通常影响什么时候 step（跳变）vs slew（渐进调频）。
 
+//step10 打开并初始化“被调的时钟”（分成三种情况：free_running / 有PHC / CLOCK_REALTIME）
+	// case 1: free_running  -> 不调时钟
 	if (c->free_running) {
 		c->clkid = CLOCK_INVALID;
 		if (timestamping == TS_SOFTWARE || timestamping == TS_LEGACY_HW) {
 			c->utc_timescale = 1;
 		}
+	// case2: 有 PHC: (先找之前的phc_index，如果没有就用用户cmd里的phc_device)
+	// 	打开 /dev/ptpX 得到 clockid
+	//  读最大可调频范围 max_adj
+	//  初始化 clockadj（后面真正调频/step 都靠它）
 	} else if (phc_index >= 0) {
 		snprintf(phc, sizeof(phc), "/dev/ptp%d", phc_index);
 		c->clkid = phc_open(phc);
@@ -1120,8 +1236,10 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 			pr_err("clock is not adjustable");
 			return NULL;
 		}
+		// 初始化 clockadj, 做一次能力检测 + 运行参数初始化, 为后续对这个时钟（PHC 或 CLOCK_REALTIME）进行调频/调相做准备.
+		// 后面 servo 的所有输出都会打到 c->clkid。这就是“被锁定的设备”
 		clockadj_init(c->clkid);
-	} else if (phc_device) {
+	} else if (phc_device) {  // phc_device:是用户显式 -p /dev/ptp0
 		c->clkid = phc_open(phc_device);
 		if (c->clkid == CLOCK_INVALID) {
 			pr_err("Failed to open %s: %m", phc_device);
@@ -1129,6 +1247,7 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 		}
 		max_adj = clockadj_max_freq(c->clkid);
 		clockadj_init(c->clkid);
+	// case 3: 没 PHC 用系统时钟,走系统时钟锁定路径
 	} else {
 		c->clkid = CLOCK_REALTIME;
 		c->utc_timescale = 1;
@@ -1140,8 +1259,9 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 	c->leap_set = 0;
 	c->time_flags = c->utc_timescale ? 0 : PTP_TIMESCALE;
 
+//step11: 读当前频偏 fadj，创建 servo（锁定环在这里“出生”）
 	if (c->clkid != CLOCK_INVALID) {
-		fadj = (int) clockadj_get_freq(c->clkid);
+		fadj = (int) clockadj_get_freq(c->clkid);  // fadj：当前时钟的频率偏移（ppb）
 		/* Due to a bug in older kernels, the reading may silently fail
 		   and return 0. Set the frequency back to make sure fadj is
 		   the actual frequency of the clock. */
@@ -1154,18 +1274,27 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 			return NULL;
 		}
 	}
+	// 创建 servo
+		// 	初始化 servo 的“初始频偏基准”（这里用 -fadj 是为了把 servo 的内部状态与当前硬件频率对齐）。
+		//  给 servo 一个最大调频限制 max_adj，防止输出超过硬件能力。
 	c->servo = servo_create(c->config, servo, -fadj, max_adj, sw_ts);
 	if (!c->servo) {
 		pr_err("Failed to create clock servo");
 		return NULL;
 	}
-	c->servo_state = SERVO_UNLOCKED;
-	c->servo_type = servo;
+	c->servo_state = SERVO_UNLOCKED;  // 初始状态 SERVO_UNLOCKED：启动时肯定没锁。
+	c->servo_type = servo;  // 这个函数最开始时获取了 default.cfg 里 clock_servo 是 pi
+
+//step12: 选择数据集比较函数（BMC 比较策略）普通 IEEE 1588 vs G.8275 电信规则（telecom_dscmp）
 	if (config_get_int(config, NULL, "dataset_comparison") == DS_CMP_G8275) {
 		c->dscmp = telecom_dscmp;
 	} else {
 		c->dscmp = dscmp;
 	}
+
+//step13 创建时间戳处理器 tsproc + stats + sanity check.   (tsproc 是“时间戳滤波器”，stats 是“统计器”，sanity_check 是“安全阀”)
+	// tsproc = 把原始 PTP 时间戳变成“干净的 offset/delay”再交给 servo 的滤波器。
+	    // tsproc作用主要有 4 个：1. 过滤抖动（最重要）2.计算 mean path delay 3.处理双向比率（nrr）4.控制初始 delay
 	c->tsproc = tsproc_create(config_get_int(config, NULL, "tsproc_mode"),
 				  config_get_int(config, NULL, "delay_filter"),
 				  config_get_int(config, NULL, "delay_filter_length"));
@@ -1176,7 +1305,8 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 	c->initial_delay = dbl_tmv(config_get_int(config, NULL, "initial_delay"));
 	c->master_local_rr = 1.0;
 	c->nrr = 1.0;
-	c->stats_interval = config_get_int(config, NULL, "summary_interval");
+	// stats 用来统计 offset/freq/delay 的平均值、最大值、标准差。
+	c->stats_interval = config_get_int(config, NULL, "summary_interval");  // ptp4l 会定期打印 summary：rms offset/mean freq/mean delay
 	c->stats.offset = stats_create();
 	c->stats.freq = stats_create();
 	c->stats.delay = stats_create();
@@ -1184,7 +1314,7 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 		pr_err("failed to create stats");
 		return NULL;
 	}
-	sfl = config_get_int(config, NULL, "sanity_freq_limit");
+	sfl = config_get_int(config, NULL, "sanity_freq_limit");  // 如果设置了sanity_freq_limit 200000, 如果 servo 输出频率超过这个范围，就认为异常。它可以防止 servo 把频率调到离谱值.
 	if (sfl) {
 		c->sanity_check = clockcheck_create(sfl);
 		if (!c->sanity_check) {
@@ -1193,6 +1323,7 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 		}
 	}
 
+//step14: 初始化 parentDS(parentDS：我当前跟随的 Master / GM 是谁) / grandmaster 信息 + 同步周期
 	/* Initialize the parentDS. */
 	clock_update_grandmaster(c);
 	c->dad.pds.parentStats                           = 0;
@@ -1200,8 +1331,9 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 	c->dad.pds.observedParentClockPhaseChangeRate    = 0x7fffffff;
 	c->dad.ptl = c->ptl;
 
-	clock_sync_interval(c, 0);
+	clock_sync_interval(c, 0);  // 设置 sync interval（0 这里通常意味着按配置初始化）
 
+//step15: 初始化端口容器、pollfd、并创建 UDS 端口
 	LIST_INIT(&c->subscribers);
 	LIST_INIT(&c->ports);
 	c->last_port_number = 0;
@@ -1214,7 +1346,7 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 	/* Create the UDS interfaces. */
 
 	c->uds_rw_port = port_open(phc_device, phc_index, timestamping, 0,
-				   c->uds_rw_if, c);
+				   c->uds_rw_if, c);  // port_open() 会创建一个 port，并把它的 fd 纳入 clock 的 poll 集合。
 	if (!c->uds_rw_port) {
 		pr_err("failed to open the UDS-RW port");
 		return NULL;
@@ -1227,11 +1359,16 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 	}
 	clock_fda_changed(c);
 
-	c->slave_event_monitor = monitor_create(config, c->uds_rw_port);
+	c->slave_event_monitor = monitor_create(config, c->uds_rw_port);  // monitor_create()：监听 slave 状态变化并通过 UDS 报告（比如给外部工具）
 	if (!c->slave_event_monitor) {
 		pr_err("failed to create slave event monitor");
 		return NULL;
 	}
+
+//step16: 创建“真实网络接口”端口,
+    // “需要创建哪些 port”基本就靠 cmd 配置的 config->interfaces列表
+	// 这一步为每个 -i ethX 创建 PTP 端口：绑定 transport、时间戳模式、定时器、状态机等。
+	// 选主、收发 announce/sync/delay 都从这些 port 开始。
 
 	/* Create the ports. */
 	STAILQ_FOREACH(iface, &config->interfaces, list) {
@@ -1243,6 +1380,8 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 
 	c->dds.numberPorts = c->nports;
 
+	// 17) 触发每个 port 的状态机初始化事件:
+	// 真正让端口 FSM（designated_fsm）进入初始状态并开始工作。
 	LIST_FOREACH(p, &c->ports, list) {
 		port_dispatch(p, EV_INITIALIZE, 0);
 	}
@@ -1496,6 +1635,7 @@ int clock_manage(struct clock *c, struct port *p, struct ptp_message *msg)
 	case TLV_DEFAULT_DATA_SET:
 	case TLV_CURRENT_DATA_SET:
 	case TLV_PARENT_DATA_SET:
+	case TLV_PTP_SOURCE_STATUS_LIST:
 	case TLV_TIME_PROPERTIES_DATA_SET:
 	case TLV_PRIORITY1:
 	case TLV_PRIORITY2:
@@ -1799,7 +1939,13 @@ enum servo_state clock_synchronize(struct clock *c, tmv_t ingress, tmv_t origin)
 		if (c->free_running) {
 			return clock_no_adjust(c, ingress, origin);
 		} else {
-			return state;
+			//if the condition isnot satisfy, just keep the state. will not adjust.
+			if (c->servo_state == SERVO_LOCKED_STABLE)//Z
+			{
+				c->servo_state = SERVO_LOCKED;
+			}
+
+			return c->servo_state;
 		}
 	}
 
@@ -2021,4 +2167,25 @@ struct servo *clock_servo(struct clock *c)
 enum servo_state clock_servo_state(struct clock *c)
 {
 	return c->servo_state;
+}
+
+void clock_set_ptp_source_in_announce_msg(struct clock *c, struct announce_msg msg)
+{
+	c->aml.pri1 = msg.grandmasterPriority1;
+	c->aml.annMsgFlagField[0] = msg.hdr.flagField[0];
+	c->aml.annMsgFlagField[1] = msg.hdr.flagField[1];
+	c->aml.stepsRemoved = msg.stepsRemoved;
+	c->aml.pri2 = msg.grandmasterPriority2;
+	c->aml.currentUtcOffset = msg.currentUtcOffset;
+	//pr_info("BR-DEBUG: get GET message from clock_set_ptp_source_in_announce_msg");
+	//pr_info("BR-DEBUG: pri1=%d, flag0=%d, flag1=%d, stepsRemoved=%d", c->aml.pri1, c->aml.annMsgFlagField[0], c->aml.annMsgFlagField[1], c->aml.stepsRemoved);
+	//pr_info("BR-DEBUG: pri2=%d, currentUtcOffset=%d", c->aml.pri2, c->aml.currentUtcOffset);
+}
+
+void clock_set_ptp_source_in_sync_msg(struct clock *c, struct sync_msg msg)
+{
+	c->aml.syncMsgFlagField[0] = msg.hdr.flagField[0];
+	c->aml.syncMsgFlagField[1] = msg.hdr.flagField[1];
+	//pr_info("BR-DEBUG: get GET message from clock_set_ptp_source_in_sync_msg");
+	//pr_info("BR-DEBUG: flag0=%d, flag1=%d", c->aml.syncMsgFlagField[0], c->aml.syncMsgFlagField[1]);
 }

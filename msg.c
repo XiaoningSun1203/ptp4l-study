@@ -27,6 +27,8 @@
 #include "print.h"
 #include "tlv.h"
 
+#include "timestamp_get.h"
+
 #define VERSION_MASK 0x0f
 #define VERSION      0x02
 
@@ -350,6 +352,10 @@ int msg_post_recv(struct ptp_message *m, int cnt)
 
 	switch (type) {
 	case SYNC:
+#ifdef PROT_STACK_FROM_FPGA
+		/****************changed by LQ-20210621****************************/
+		m->hwts.ts.ns = timestamp_sync_get();
+#endif
 		pdulen = sizeof(struct sync_msg);
 		break;
 	case DELAY_REQ:
@@ -362,16 +368,28 @@ int msg_post_recv(struct ptp_message *m, int cnt)
 		pdulen = sizeof(struct pdelay_resp_msg);
 		break;
 	case FOLLOW_UP:
+#ifdef PROT_STACK_FROM_FPGA
+		/****************changed by LQ-20210621****************************/
+		m->hwts.ts.ns = timestamp_followup_get();
+#endif
 		pdulen = sizeof(struct follow_up_msg);
 		break;
 	case DELAY_RESP:
+#ifdef PROT_STACK_FROM_FPGA
+		/****************changed by LQ-20210621****************************/
+		m->hwts.ts.ns = timestamp_dlyrsp_get();
+#endif
 		pdulen = sizeof(struct delay_resp_msg);
 		break;
 	case PDELAY_RESP_FOLLOW_UP:
 		pdulen = sizeof(struct pdelay_resp_fup_msg);
 		break;
 	case ANNOUNCE:
-		pdulen = sizeof(struct announce_msg);
+#ifdef PROT_STACK_FROM_FPGA
+		/****************changed by LQ-20210621****************************/
+		m->hwts.ts.ns = timestamp_announce_get();
+#endif
+                pdulen = sizeof(struct announce_msg);
 		break;
 	case SIGNALING:
 		pdulen = sizeof(struct signaling_msg);

@@ -42,6 +42,7 @@
 int sk_tx_timeout = 1;
 int sk_check_fupsync;
 enum hwts_filter_mode sk_hwts_filter_mode = HWTS_FILTER_NORMAL;
+const int retValLargerThanZero = 1;
 
 /* private methods */
 
@@ -350,12 +351,18 @@ int sk_receive(int fd, void *buf, int buflen,
 		struct pollfd pfd = { fd, sk_events, 0 };
 		res = poll(&pfd, 1, sk_tx_timeout);
 		if (res < 1) {
+#ifdef PROT_STACK_FROM_FPGA
+                        return retValLargerThanZero;
+#endif
 			pr_err(res ? "poll for tx timestamp failed: %m" :
 			             "timed out while polling for tx timestamp");
 			pr_err("increasing tx_timestamp_timeout may correct "
 			       "this issue, but it is likely caused by a driver bug");
 			return -errno;
 		} else if (!(pfd.revents & sk_revents)) {
+#ifdef PROT_STACK_FROM_FPGA
+                        return retValLargerThanZero;
+#endif
 			pr_err("poll for tx timestamp woke up on non ERR event");
 			return -1;
 		}
@@ -363,6 +370,12 @@ int sk_receive(int fd, void *buf, int buflen,
 
 	cnt = recvmsg(fd, &msg, flags);
 	if (cnt < 0) {
+#ifdef PROT_STACK_FROM_FPGA
+		if (flags == MSG_ERRQUEUE)
+		{
+			return retValLargerThanZero;
+		}
+#endif
 		pr_err("recvmsg%sfailed: %m",
 		       flags == MSG_ERRQUEUE ? " tx timestamp " : " ");
 	}
@@ -371,6 +384,12 @@ int sk_receive(int fd, void *buf, int buflen,
 		type  = cm->cmsg_type;
 		if (SOL_SOCKET == level && SO_TIMESTAMPING == type) {
 			if (cm->cmsg_len < sizeof(*ts) * 3) {
+#ifdef PROT_STACK_FROM_FPGA
+				if (flags == MSG_ERRQUEUE)
+				{
+					return retValLargerThanZero;
+				}
+#endif
 				pr_warning("short SO_TIMESTAMPING message");
 				return -EMSGSIZE;
 			}
@@ -378,6 +397,12 @@ int sk_receive(int fd, void *buf, int buflen,
 		}
 		if (SOL_SOCKET == level && SO_TIMESTAMPNS == type) {
 			if (cm->cmsg_len < sizeof(*sw)) {
+#ifdef PROT_STACK_FROM_FPGA
+				if (flags == MSG_ERRQUEUE)
+				{
+					return retValLargerThanZero;
+				}
+#endif
 				pr_warning("short SO_TIMESTAMPNS message");
 				return -EMSGSIZE;
 			}
@@ -388,6 +413,12 @@ int sk_receive(int fd, void *buf, int buflen,
 
 	if (addr)
 		addr->len = msg.msg_namelen;
+#ifdef PROT_STACK_FROM_FPGA
+		if (flags == MSG_ERRQUEUE)//for tx timestamp, always return success.
+		{
+			return retValLargerThanZero;
+		}
+#endif
 
 	if (!ts) {
 		memset(&hwts->ts, 0, sizeof(hwts->ts));

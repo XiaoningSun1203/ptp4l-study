@@ -18,11 +18,11 @@
 KBUILD_OUTPUT =
 
 DEBUG	=
-CC	= $(CROSS_COMPILE)gcc
+CC	?= $(CROSS_COMPILE)gcc
 VER     = -DVER=$(version)
-CFLAGS	= -Wall $(VER) $(incdefs) $(DEBUG) $(EXTRA_CFLAGS)
+CFLAGS	= -Wall $(VER) $(incdefs) $(DEBUG) $(EXTRA_CFLAGS) -DHAVE_ONESTEP_P2P -DHAVE_ONESTEP_SYNC -DPROT_STACK_FROM_FPGA
 LDLIBS	= -lm -lrt -pthread $(EXTRA_LDFLAGS)
-PRG	= ptp4l hwstamp_ctl nsm phc2sys phc_ctl pmc timemaster ts2phc
+PRG	= ptp4l hwstamp_ctl nsm phc2sys phc_ctl pmc timemaster ts2phc validate
 FILTERS	= filter.o mave.o mmedian.o
 SERVOS	= linreg.o ntpshm.o nullf.o pi.o servo.o
 TRANSP	= raw.o transport.o udp.o udp6.o uds.o
@@ -32,10 +32,10 @@ OBJ	= bmc.o clock.o clockadj.o clockcheck.o config.o designated_fsm.o \
  e2e_tc.o fault.o $(FILTERS) fsm.o hash.o interface.o monitor.o msg.o phc.o \
  port.o port_signaling.o pqueue.o print.o ptp4l.o p2p_tc.o rtnl.o $(SERVOS) \
  sk.o stats.o tc.o $(TRANSP) telecom.o tlv.o tsproc.o unicast_client.o \
- unicast_fsm.o unicast_service.o util.o version.o
+ unicast_fsm.o unicast_service.o util.o version.o timestamp_get.o
 
 OBJECTS	= $(OBJ) hwstamp_ctl.o nsm.o phc2sys.o phc_ctl.o pmc.o pmc_agent.o \
- pmc_common.o sysoff.o timemaster.o $(TS2PHC)
+ pmc_common.o sysoff.o timemaster.o $(TS2PHC) validate.o
 SRC	= $(OBJECTS:.o=.c)
 DEPEND	= $(OBJECTS:.o=.d)
 srcdir	:= $(dir $(lastword $(MAKEFILE_LIST)))
@@ -43,24 +43,19 @@ incdefs := $(shell $(srcdir)/incdefs.sh)
 version := $(shell $(srcdir)/version.sh $(srcdir))
 VPATH	= $(srcdir)
 
-prefix	= /usr/local
-sbindir	= $(prefix)/sbin
-mandir	= $(prefix)/man
-man8dir	= $(mandir)/man8
-
 all: $(PRG)
 
 ptp4l: $(OBJ)
 
 nsm: config.o $(FILTERS) hash.o interface.o msg.o nsm.o phc.o print.o \
- rtnl.o sk.o $(TRANSP) tlv.o tsproc.o util.o version.o
+ rtnl.o sk.o $(TRANSP) tlv.o tsproc.o util.o version.o timestamp_get.o
 
 pmc: config.o hash.o interface.o msg.o phc.o pmc.o pmc_common.o print.o sk.o \
- tlv.o $(TRANSP) util.o version.o
+ tlv.o $(TRANSP) util.o version.o timestamp_get.o
 
 phc2sys: clockadj.o clockcheck.o config.o hash.o interface.o msg.o \
  phc.o phc2sys.o pmc_agent.o pmc_common.o print.o $(SERVOS) sk.o stats.o \
- sysoff.o tlv.o $(TRANSP) util.o version.o
+ sysoff.o tlv.o $(TRANSP) util.o version.o timestamp_get.o
 
 hwstamp_ctl: hwstamp_ctl.o version.o
 
@@ -71,6 +66,8 @@ timemaster: phc.o print.o rtnl.o sk.o timemaster.o util.o version.o
 ts2phc: config.o clockadj.o hash.o interface.o phc.o print.o $(SERVOS) sk.o \
  $(TS2PHC) util.o version.o
 
+validate: validate.o hash.o interface.o phc.o print.o sk.o util.o
+
 version.o: .version version.sh $(filter-out version.d,$(DEPEND))
 
 .version: force
@@ -79,13 +76,6 @@ version.o: .version version.sh $(filter-out version.d,$(DEPEND))
 	rm -f .version.new;
 
 force:
-
-install: $(PRG)
-	install -p -m 755 -d $(DESTDIR)$(sbindir) $(DESTDIR)$(man8dir)
-	install $(PRG) $(DESTDIR)$(sbindir)
-	for x in $(PRG:%=%.8); do \
-		[ -f $$x ] && install -p -m 644 -t $(DESTDIR)$(man8dir) $$x ; \
-	done
 
 clean:
 	rm -f $(OBJECTS) $(DEPEND) $(PRG)

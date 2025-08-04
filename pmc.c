@@ -153,6 +153,7 @@ static void pmc_show(struct ptp_message *msg, FILE *fp)
 	struct defaultDS *dds;
 	struct currentDS *cds;
 	struct parentDS *pds;
+	struct ptp_source_status_list *aml;
 	struct portDS *p;
 	struct TLV *tlv;
 	int action;
@@ -277,6 +278,26 @@ static void pmc_show(struct ptp_message *msg, FILE *fp)
 			pds->grandmasterPriority2,
 			cid2str(&pds->grandmasterIdentity));
 		break;
+	case TLV_PTP_SOURCE_STATUS_LIST:
+	    aml = (struct ptp_source_status_list *) mgt->data;
+		fprintf(fp, "ptp_source_status_list "
+			IFMT "Priority1                             %hhu"
+			IFMT "Priority2                             %hhu"
+			IFMT "currentUtcOffset                      %hd"
+			IFMT "annFlag0                              0x%02hhx"
+			IFMT "annFlag1                              0x%02hhx"
+			IFMT "syncFlag0                             0x%02hhx"
+			IFMT "syncFlag1                             0x%02hhx"
+			IFMT "stepsRemoved                          0x%02hhx",
+			aml->pri1,
+			aml->pri2,
+			aml->currentUtcOffset,
+			aml->annMsgFlagField[0],
+			aml->annMsgFlagField[1],
+			aml->syncMsgFlagField[0],
+			aml->syncMsgFlagField[1],
+			aml->stepsRemoved);
+	    break;
 	case TLV_TIME_PROPERTIES_DATA_SET:
 		tp = (struct timePropertiesDS *) mgt->data;
 		fprintf(fp, "TIME_PROPERTIES_DATA_SET "

@@ -125,6 +125,7 @@ static int mgt_post_recv(struct management_tlv *m, uint16_t data_len,
 	struct port_properties_np *ppn;
 	struct port_stats_np *psn;
 	struct mgmt_clock_description *cd;
+	struct ptp_source_status_list *aml;
 	int extra_len = 0, len;
 	uint8_t *buf;
 	uint16_t u16;
@@ -264,6 +265,14 @@ static int mgt_post_recv(struct management_tlv *m, uint16_t data_len,
 		pds->grandmasterClockQuality.offsetScaledLogVariance =
 			ntohs(pds->grandmasterClockQuality.offsetScaledLogVariance);
 		break;
+	case TLV_PTP_SOURCE_STATUS_LIST:
+		//pr_info("BR-DEBUG: get GET message from mgt_post_recv");
+		if (data_len != sizeof(struct ptp_source_status_list))
+			goto bad_length;
+		aml = (struct ptp_source_status_list*) m->data;
+		aml->stepsRemoved = ntohs(aml->stepsRemoved);
+		aml->currentUtcOffset = ntohs(aml->currentUtcOffset);
+		break;
 	case TLV_TIME_PROPERTIES_DATA_SET:
 		if (data_len != sizeof(struct timePropertiesDS))
 			goto bad_length;
@@ -361,6 +370,7 @@ static void mgt_pre_send(struct management_tlv *m, struct tlv_extra *extra)
 	struct port_properties_np *ppn;
 	struct port_stats_np *psn;
 	struct mgmt_clock_description *cd;
+	struct ptp_source_status_list *aml;
 	switch (m->id) {
 	case TLV_CLOCK_DESCRIPTION:
 		if (extra) {
@@ -394,6 +404,12 @@ static void mgt_pre_send(struct management_tlv *m, struct tlv_extra *extra)
 		pds->grandmasterClockQuality.offsetScaledLogVariance =
 			htons(pds->grandmasterClockQuality.offsetScaledLogVariance);
 		break;
+	case TLV_PTP_SOURCE_STATUS_LIST:
+		//pr_info("BR-DEBUG: get GET message from mgt_pre_send");
+		aml = (struct ptp_source_status_list *) m->data;
+		aml->stepsRemoved = htons(aml->stepsRemoved);
+		aml->currentUtcOffset = ntohs(aml->currentUtcOffset);
+	    break;
 	case TLV_TIME_PROPERTIES_DATA_SET:
 		tp = (struct timePropertiesDS *) m->data;
 		tp->currentUtcOffset = htons(tp->currentUtcOffset);

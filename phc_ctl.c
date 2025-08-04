@@ -485,7 +485,7 @@ int main(int argc, char *argv[])
 	/* Process the command line arguments. */
 	progname = strrchr(argv[0], '/');
 	progname = progname ? 1+progname : argv[0];
-	while (EOF != (c = getopt(argc, argv,
+	while (EOF != (c = getopt(argc<=3?argc:3, argv,
 				  "l:qQvh"))) {
 		switch (c) {
 		case 'l':

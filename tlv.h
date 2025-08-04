@@ -100,6 +100,7 @@ enum management_action {
 #define TLV_GRANDMASTER_SETTINGS_NP			0xC001
 #define TLV_SUBSCRIBE_EVENTS_NP				0xC003
 #define TLV_SYNCHRONIZATION_UNCERTAIN_NP		0xC006
+#define TLV_PTP_SOURCE_STATUS_LIST         0x2030
 
 /* Port management ID values */
 #define TLV_NULL_MANAGEMENT				0x0000

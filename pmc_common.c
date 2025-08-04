@@ -85,6 +85,7 @@ struct management_id idtab[] = {
 	{ "DEFAULT_DATA_SET", TLV_DEFAULT_DATA_SET, do_get_action },
 	{ "CURRENT_DATA_SET", TLV_CURRENT_DATA_SET, do_get_action },
 	{ "PARENT_DATA_SET", TLV_PARENT_DATA_SET, do_get_action },
+	{ "PTP_SOURCE_STATUS_LIST", TLV_PTP_SOURCE_STATUS_LIST, do_get_action },
 	{ "TIME_PROPERTIES_DATA_SET", TLV_TIME_PROPERTIES_DATA_SET, do_get_action },
 	{ "PRIORITY1", TLV_PRIORITY1, do_set_action },
 	{ "PRIORITY2", TLV_PRIORITY2, do_set_action },
@@ -499,6 +500,9 @@ static int pmc_tlv_datalen(struct pmc *pmc, int id)
 		break;
 	case TLV_PARENT_DATA_SET:
 		len += sizeof(struct parentDS);
+		break;
+	case TLV_PTP_SOURCE_STATUS_LIST:
+		len += sizeof(struct ptp_source_status_list);
 		break;
 	case TLV_TIME_PROPERTIES_DATA_SET:
 		len += sizeof(struct timePropertiesDS);

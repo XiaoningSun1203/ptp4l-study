@@ -23,15 +23,15 @@
 /** Defines the state of a port. */
 enum port_state {
 	PS_INITIALIZING = 1,
-	PS_FAULTY,
-	PS_DISABLED,
-	PS_LISTENING,
-	PS_PRE_MASTER,
-	PS_MASTER,
-	PS_PASSIVE,
-	PS_UNCALIBRATED,
-	PS_SLAVE,
-	PS_GRAND_MASTER, /*non-standard extension*/
+	PS_FAULTY = 2,
+	PS_DISABLED = 3,
+	PS_LISTENING = 4,
+	PS_PRE_MASTER = 5,
+	PS_MASTER = 6,
+	PS_PASSIVE = 7,
+	PS_UNCALIBRATED = 8,
+	PS_SLAVE = 9,
+	PS_GRAND_MASTER = 10, /*non-standard extension*/
 };
 
 /** Defines the events for the port state machine. */

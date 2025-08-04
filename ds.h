@@ -85,6 +85,15 @@ struct parent_ds {
 	unsigned int path_length;
 };
 
+struct ptp_source_status_list {
+	Octet annMsgFlagField[2];
+	Octet syncMsgFlagField[2];
+	Integer16 currentUtcOffset;
+	UInteger8 pri1;
+	UInteger8 pri2;
+    UInteger16 stepsRemoved;
+};
+
 #define CURRENT_UTC_OFFSET  37 /* 1 Jan 2017 */
 #define INTERNAL_OSCILLATOR 0xA0
 #define CLOCK_CLASS_THRESHOLD_DEFAULT 248

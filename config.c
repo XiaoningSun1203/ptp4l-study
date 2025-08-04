@@ -254,6 +254,7 @@ struct config_item config_tab[] = {
 	GLOB_ITEM_INT("gmCapable", 1, 0, 1),
 	GLOB_ITEM_ENU("hwts_filter", HWTS_FILTER_NORMAL, hwts_filter_enu),
 	PORT_ITEM_INT("hybrid_e2e", 0, 0, 1),
+	PORT_ITEM_INT("nonforwardable", 0, 0, 1),
 	PORT_ITEM_INT("ignore_source_id", 0, 0, 1),
 	PORT_ITEM_INT("ignore_transport_specific", 0, 0, 1),
 	PORT_ITEM_INT("ingressLatency", 0, INT_MIN, INT_MAX),
@@ -335,6 +336,7 @@ struct config_item config_tab[] = {
 	GLOB_ITEM_INT("utc_offset", CURRENT_UTC_OFFSET, 0, INT_MAX),
 	GLOB_ITEM_INT("verbose", 0, 0, 1),
 	GLOB_ITEM_INT("write_phase_mode", 0, 0, 1),
+	GLOB_ITEM_INT("printEn", 0, 0, 1),
 };
 
 static struct unicast_master_table *current_uc_mtab;

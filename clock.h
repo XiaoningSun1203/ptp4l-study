@@ -36,11 +36,11 @@ struct ptp_message; /*forward declaration*/
 struct clock;
 
 enum clock_type {
-	CLOCK_TYPE_ORDINARY   = 0x8000,
-	CLOCK_TYPE_BOUNDARY   = 0x4000,
-	CLOCK_TYPE_P2P        = 0x2000,
-	CLOCK_TYPE_E2E        = 0x1000,
-	CLOCK_TYPE_MANAGEMENT = 0x0800,
+	CLOCK_TYPE_ORDINARY   = 0x8000,  // 最普通的 PTP 节点：只有一个 PTP 端口,要么：当 Slave（锁别人）,要么当 Master（别人锁你）.不会转发时间
+	CLOCK_TYPE_BOUNDARY   = 0x4000,  // (边界时钟，BC)他是“一边当 Slave，一边当 Master”的设备，至少有两个接口。一个接口向上游锁(slave),其他接口向下游发时间(master)。内部有一个本地时钟(PHC/system)作为中枢。
+	CLOCK_TYPE_P2P        = 0x2000,  // (Peer-to-Peer Transparent Clock，P2P TC)核心特征：自己不锁时间,不产生 master/slave,只做一件事：👉 测量自己内部转发造成的 delay，并修正 PTP 报文里的 correctionField,📌 它“转发时间”，但不拥有时间
+	CLOCK_TYPE_E2E        = 0x1000,  // （E2E Transparent Clock）
+	CLOCK_TYPE_MANAGEMENT = 0x0800,  // （管理时钟）只做管理通信（Management TLV）的节点,不参与同步,不收 Sync / Delay,通常用于：pmc 工具,查询 / 配置远端 PTP 节点
 };
 
 /**
@@ -374,4 +374,7 @@ void clock_check_ts(struct clock *c, uint64_t ts);
  */
 double clock_rate_ratio(struct clock *c);
 
+void clock_set_ptp_source_in_announce_msg(struct clock *c, struct announce_msg msg);
+
+void clock_set_ptp_source_in_sync_msg(struct clock *c, struct sync_msg msg);
 #endif
