@@ -61,6 +61,11 @@ static void pi_destroy(struct servo *servo)
 	free(s);
 }
 
+// PI 伺服的核心算法:根据当前 offset，计算应该给 PHC 施加多少频率修正（ppb），
+// 同时决定 servo 状态（UNLOCKED / JUMP / LOCKED）
+// 输出两个东西：
+//     return ppb → 要调多少频率
+//     *state → 当前 servo 状态
 static double pi_sample(struct servo *servo,
 			int64_t offset,
 			uint64_t local_ts,

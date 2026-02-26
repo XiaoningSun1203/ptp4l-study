@@ -38,6 +38,11 @@
 
 #include "timestamp_get.h"
 
+
+// /usr/bin/ptp4l -A -i fheth0 -p /dev/ptp0 -f /var/log/psislog/app/standalone_G.8275.1.cfg -s
+// 这条命令的意思就是：
+// 	在网卡 fheth0 上启动 ptp4l，使用 /dev/ptp0 硬件时钟设备，按照 standalone_G.8275.1.cfg 配置文件中的规则，以 Slave 模式 运行，并根据网络自动选择时钟主从（但这里加了 -s 强制做 Slave）。
+
 static void usage(char *progname)
 {
 	fprintf(stderr,
@@ -228,7 +233,8 @@ int main(int argc, char *argv[])
 		config_set_int(cfg, "sanity_freq_limit", 0);
 	}
 
-	//检查如果没有任何 -i 或配置文件接口时，直接报错退出。因为 ptp4l 必须绑定网口才能收发 PTP
+	// 检查如果没有任何 -i 或配置文件设置的 port 时，直接报错退出。
+	// 必须至少有一个port，否则根本不会创建任何 port. 因为 ptp4l 必须绑定 port 才能收发 PTP
 	if (STAILQ_EMPTY(&cfg->interfaces)) {
 		fprintf(stderr, "no interface specified\n");
 		usage(progname);
@@ -239,20 +245,20 @@ int main(int argc, char *argv[])
 	type = config_get_int(cfg, NULL, "clock_type");
 	switch (type) {
 	case CLOCK_TYPE_ORDINARY:
-	    // 配置写 OC，但你给了多个接口，实际变成 BC（更合理）
+	    // 配置写 OC，但你给了多个port，实际变成 BC（更合理）
 		if (cfg->n_interfaces > 1) {
 			type = CLOCK_TYPE_BOUNDARY;
 		}
 		break;
 	case CLOCK_TYPE_BOUNDARY:
-	    // BOUNDARY 需要至少 2 口
+	    // BOUNDARY 需要至少 2 port
 		if (cfg->n_interfaces < 2) {
 			fprintf(stderr, "BC needs at least two interfaces\n");
 			goto out;
 		}
 		break;
 	case CLOCK_TYPE_P2P:
-	    // P2P_TC 需要至少 2 口 + delay_mechanism 必须 P2P
+	    // P2P_TC 需要至少 2 port + delay_mechanism 必须 P2P
 		if (cfg->n_interfaces < 2) {
 			fprintf(stderr, "TC needs at least two interfaces\n");
 			goto out;
@@ -263,7 +269,7 @@ int main(int argc, char *argv[])
 		}
 		break;
 	case CLOCK_TYPE_E2E:
-	    // E2E_TC 需要至少 2 口 + delay_mechanism 必须 E2E
+	    // E2E_TC 需要至少 2 port + delay_mechanism 必须 E2E
 		if (cfg->n_interfaces < 2) {
 			fprintf(stderr, "TC needs at least two interfaces\n");
 			goto out;

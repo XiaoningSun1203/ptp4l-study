@@ -31,7 +31,7 @@
 #define NSEC2SEC 1000000000LL
 
 enum syfu_state {
-	SF_EMPTY,
+	SF_EMPTY,     // 当前没有缓存任何 Sync 或 FUP
 	SF_HAVE_SYNC,
 	SF_HAVE_FUP,
 };

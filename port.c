@@ -718,6 +718,7 @@ static int port_ignore(struct port *p, struct ptp_message *m)
 	if (pid_eq(&m->header.sourcePortIdentity, &p->portIdentity)) {
 		return 1;
 	}
+	// 如果报文里的 domainNumber 和本地 clock 的 domainNumber 不一致 → 直接丢弃。本地 domainNumber 来自于clock_create()的配置。
 	if (m->header.domainNumber != clock_domain_number(p->clock)) {
 		return 1;
 	}
@@ -1175,6 +1176,7 @@ static void message_interval_request(struct port *p,
 	}
 }
 
+// 在 Sync msg 和 FollowUp msg 配对完成后，真正把一次 Sync 样本喂给 servo, 并根据servo_state驱动状态机。
 static void port_synchronize(struct port *p,
 			     uint16_t seqid,
 			     tmv_t ingress_ts,
@@ -1200,13 +1202,15 @@ static void port_synchronize(struct port *p,
 		enFirst = true;
 	}
 
+	// 重置 “收 Sync 超时” 定时器（表明我活着在收）
+	// 既然我刚处理了一个有效的 Sync（或配对后的样本），就把“Sync 接收超时”定时器往后推。否则长时间收不到 Sync 会触发 FD_SYNC_RX_TIMER 分支，导致超时事件。
 	port_set_sync_rx_tmo(p);
 
-	t1 = timestamp_to_tmv(origin_ts);
-	t2 = ingress_ts;
-	c1 = correction_to_tmv(correction1);
+	t1 = timestamp_to_tmv(origin_ts);  // GM时间（来自 Follow_Up 或 one-step Sync）
+	t2 = ingress_ts;                   // 本地 PHC (/dev/ptpX )时间（硬件时间戳）
+	c1 = correction_to_tmv(correction1);  // correctionField：中间透明时钟/链路累计的修正（相当于“路上耽误了多少”这类信息的累加项）
 	c2 = correction_to_tmv(correction2);
-	t1c = tmv_add(t1, tmv_add(c1, c2));
+	t1c = tmv_add(t1, tmv_add(c1, c2));  // 把 GM 的发送时间 + 路径修正” 合成一个更接近真实传播模型的参考时间
 
 	switch (p->state) {
 	case PS_UNCALIBRATED:
@@ -1220,13 +1224,18 @@ static void port_synchronize(struct port *p,
 	}
 
 	last_state = clock_servo_state(p->clock);
-	state = clock_synchronize(p->clock, t2, t1c);
+	state = clock_synchronize(p->clock, t2, t1c);  // 根据 t2 和 t1c 形成offset样本，喂给servo_sample(),返回一个enum servo_state
 	if (last_state != state)//Z
 	{
-		pr_info("%d=>%d", last_state, state);
+		pr_info("%d=>%d", last_state, state);  // 如果 servo 的state发生变化，就会有这种打印
 	}
+
+	// 拿到 SERVO_* 后，把它翻译成 FSM 事件：
+		// UNLOCKED / JUMP → EV_SYNCHRONIZATION_FAULT
+		// LOCKED          → EV_MASTER_CLOCK_SELECTED（触发 UNCALIBRATED→SLAVE）
+		// LOCKED_STABLE   → message_interval_request(...)（更激进的间隔协商）
 	switch (state) {
-	case SERVO_UNLOCKED:
+	case SERVO_UNLOCKED:  // 目前无法锁定（样本不可靠/偏差太大/丢包/异常）,先回到初始频率、配置，避免越调越乱。
 		port_dispatch(p, EV_SYNCHRONIZATION_FAULT, 0);
 		if (servo_offset_threshold(clock_servo(p->clock)) != 0 &&
 		    sync_interval != p->initialLogSyncInterval) {
@@ -1245,7 +1254,7 @@ static void port_synchronize(struct port *p,
 			p->peer_delay_req = NULL;
 		}
 		break;
-	case SERVO_LOCKED:
+	case SERVO_LOCKED:  // 可以进入 SLAVE
 		port_dispatch(p, EV_MASTER_CLOCK_SELECTED, 0);
 		break;
 	case SERVO_LOCKED_STABLE:
@@ -1271,6 +1280,24 @@ static void port_syfufsm_print_mismatch(struct port *p, enum syfu_event event,
 		 msg_type_string(msg_type(m)), m->header.sequenceId);
 }
 
+// 为了解决一个现实问题：
+	// 1.网络可能乱序;
+	// 2.PHY 硬件时间戳可能延迟;
+	// 3.Sync 和 Follow_Up 可能先后颠倒到达;
+// 所以必须有一个“Sync / Follow_Up 配对状态机”。
+// port_syfufsm() 不做时间计算, 它只负责保证 Sync + Follow_Up 成对,真正的 offset 计算发生在：port_synchronize().
+//         SF_EMPTY
+//          /      \.
+//    SYNC /        \ FUP
+//        v          v
+//  SF_HAVE_SYNC   SF_HAVE_FUP
+//        |          |
+//    FUP_MATCH   SYNC_MATCH
+//        \          /
+//         \        /
+//           port_synchronize()
+//               ↓
+//            SF_EMPTY
 /*
  * Handle out of order packets. The network stack might
  * provide the follow up _before_ the sync message. After all,
@@ -2055,6 +2082,7 @@ void process_delay_resp(struct port *p, struct ptp_message *m)
 	port_set_delay_tmo(p);
 }
 
+// 负责在 two-step 模式下，把 Follow_Up 和之前收到的 Sync 拼在一起，从而得到完整的“发送时间戳”
 void process_follow_up(struct port *p, struct ptp_message *m)
 {
 	enum syfu_event event;
@@ -2072,7 +2100,9 @@ void process_follow_up(struct port *p, struct ptp_message *m)
 	case PS_SLAVE:
 		break;
 	}
+	// 只有在 UNCALIBRATED / SLAVE 才处理
 
+	// 确保 Follow_Up msg 来自当前选定的 GM。防止乱包。
 	if (check_source_identity(p, m)) {
 		return;
 	}
@@ -2084,13 +2114,14 @@ void process_follow_up(struct port *p, struct ptp_message *m)
 		clock_follow_up_info(p->clock, fui);
 	}
 
+	// 判断 Follow_Up 是否和之前收到的 Sync 是一对, sequenceId 是否一致
 	if (p->syfu == SF_HAVE_SYNC &&
 	    p->last_syncfup->header.sequenceId == m->header.sequenceId) {
 		event = FUP_MATCH;
 	} else {
 		event = FUP_MISMATCH;
 	}
-	port_syfufsm(p, event, m);
+	port_syfufsm(p, event, m);  // 进入小状态机（Sync/Follow_Up FSM）,如果match，就进入真实对时 port_synchronize()
 }
 
 int process_pdelay_req(struct port *p, struct ptp_message *m)
@@ -2376,19 +2407,24 @@ void process_sync(struct port *p, struct ptp_message *m)
 	case PS_SLAVE:
 		break;
 	}
+	// 只有当我是 SLAVE 或 UNCALIBRATED 才会处理 Sync msg。
 
+	// 如果这个 Sync 不是来自我当前选定的 GM/parent → 忽略。防止多个 GM 混乱
 	if (check_source_identity(p, m)) {
 		return;
 	}
 
+	// 如果 GM 改变了 Sync 发送周期，我也更新本地同步周期
 	if (!msg_unicast(m) &&
 	    m->header.logMessageInterval != p->log_sync_interval) {
 		p->log_sync_interval = m->header.logMessageInterval;
 		clock_sync_interval(p->clock, p->log_sync_interval);
 	}
 
+	// 修正 correctionField（路径非对称补偿）,如果链路存在已知非对称延迟：→ 在这里补偿。
 	m->header.correction += p->asymmetry;
 
+	// 如果是 One-step 模式：Sync 报文里已经包含精确时间，不需要等 Follow_Up，直接进入真实对时port_synchronize().
 	if (one_step(m)) {
 		port_synchronize(p, m->header.sequenceId,
 				 m->hwts.ts, m->ts.pdu,
@@ -2398,6 +2434,7 @@ void process_sync(struct port *p, struct ptp_message *m)
 		return;
 	}
 
+	// 如果是 Two-step 模式：等待 Follow_Up（两个报文要匹配 sequenceId）
 	if (p->syfu == SF_HAVE_FUP &&
 	    fup_sync_ok(p->last_syncfup, m) &&
 	    p->last_syncfup->header.sequenceId == m->header.sequenceId) {
@@ -2653,8 +2690,21 @@ void port_link_status(void *ctx, int linkup, int ts_index)
 enum fsm_event port_event(struct port *p, int fd_index)
 {
 	return p->event(p, fd_index);
+	// 在 port_open()时已经设定好是何种event 
+	// 比如：bc_event() 或者 p2p_event() 或者 e2e_event() ?
+
+	// 这些 *_event() 函数里会做典型的事：
+	// 从 socket 收包（general/event message 通道）
+	// 解析 PTP 报文类型
+	// 更新端口内部状态/时间戳缓存
+	// 返回一个 enum fsm_event（比如 “收到 Announce / 收到 Sync / 超时”等）
+	    // 所以收包开始点：不是 port_event()，而是 port_open() 里绑定的 bc_event/p2p_event/e2e_event。
 }
 
+// 这个函数就像一个 port 的前台接待：
+    // 如果有人敲门( fd 可读) → 收包、解析、分发给 process_xxx
+	// 如果闹钟响了( fd 是 timer类) → 触发相应动作（重发、超时、重选主、发 sync 等）
+	// 如果网卡链路状态变化( fd 是 RTNL类) → 触发 fault cleared/detected
 static enum fsm_event bc_event(struct port *p, int fd_index)
 {
 	enum fsm_event event = EV_NONE;
@@ -2662,6 +2712,7 @@ static enum fsm_event bc_event(struct port *p, int fd_index)
 	int cnt, fd = p->fda.fd[fd_index], err;
 
 	switch (fd_index) {
+// step1: 先处理“不是收包fd ”的 fd：各种 timer / RTNL
 	case FD_ANNOUNCE_TIMER:
 	case FD_SYNC_RX_TIMER:
 		pr_debug("%s: %s timeout", p->log_name,
@@ -2736,19 +2787,23 @@ static enum fsm_event bc_event(struct port *p, int fd_index)
 			return EV_NONE;
 	}
 
-	msg = msg_allocate();
+// step2: 如果不是 timer fd / RTNL fd，那就是“收包路径”.
+	// 说明 fd_index 是 FD_EVENT / FD_GENERAL,
+	msg = msg_allocate();  // 存放即将收到的 PTP 报文
 	if (!msg)
 		return EV_FAULT_DETECTED;
 
-	msg->hwts.type = p->timestamping;
+	msg->hwts.type = p->timestamping;  // 这条报文该用哪种type去解析时间戳，因为不同类型的timestamp解析逻辑不一样
 
+	// 真正从 socket 收包***********************************************************************************************************
+	//transport_recv() 会从 L2/L4 socket 读取数据，并把必要的辅助信息（如硬件时间戳）放进 msg 结构。
 	cnt = transport_recv(p->trp, fd, msg);
 	if (cnt < 0) {
 		pr_err("%s: recv message failed", p->log_name);
 		msg_put(msg);
 		return EV_FAULT_DETECTED;
 	}
-	err = msg_post_recv(msg, cnt);
+	err = msg_post_recv(msg, cnt);  // 解析 / 校验消息
 	if (err) {
 		switch (err) {
 		case -EBADMSG:
@@ -2762,10 +2817,12 @@ static enum fsm_event bc_event(struct port *p, int fd_index)
 		return EV_NONE;
 	}
 	port_stats_inc_rx(p, msg);
-	if (port_ignore(p, msg)) {
+	if (port_ignore(p, msg)) {  // 统计 & 过滤.port_ignore() 会基于 domain、transportSpecific、port state、配置策略等决定是否忽略这个包。
 		msg_put(msg);
 		return EV_NONE;
 	}
+
+	// 时间戳检查（PTP 的命门）
 	if (msg_sots_missing(msg) &&
 	    !(p->timestamping == TS_P2P1STEP && msg_type(msg) == PDELAY_REQ)) {
 		pr_err("%s: received %s without timestamp",
@@ -2778,10 +2835,16 @@ static enum fsm_event bc_event(struct port *p, int fd_index)
 		clock_check_ts(p->clock, tmv_to_nanoseconds(msg->hwts.ts));
 	}
 
+// step3: 按 messageType 分发到 process_*
+    // switch (msg_type(msg)) {
+	//   case SYNC:        process_sync()
+	//   case FOLLOW_UP:   process_follow_up()
+	//   case DELAY_RESP:  process_delay_resp()
+	//   case ANNOUNCE:    process_announce()
 	switch (msg_type(msg)) {
 	case SYNC:
 		clock_set_ptp_source_in_sync_msg(p->clock, msg->sync);
-		process_sync(p, msg);
+		process_sync(p, msg);  // ***************************************************************************************
 		break;
 	case DELAY_REQ:
 		if (process_delay_req(p, msg))

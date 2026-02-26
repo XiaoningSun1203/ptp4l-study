@@ -33,9 +33,9 @@ struct interface;
 enum transport_type {
 	/* 0 is Reserved in spec. Use it for UDS */
 	TRANS_UDS = 0,
-	TRANS_UDP_IPV4 = 1,
-	TRANS_UDP_IPV6,
-	TRANS_IEEE_802_3,
+	TRANS_UDP_IPV4 = 1,  // PTP消息被封装在 L4
+	TRANS_UDP_IPV6,      // PTP消息被封装在 L4
+	TRANS_IEEE_802_3,    // PTP消息被封装在 L2
 	TRANS_DEVICENET,
 	TRANS_CONTROLNET,
 	TRANS_PROFINET,

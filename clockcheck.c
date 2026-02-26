@@ -52,6 +52,8 @@ struct clockcheck *clockcheck_create(int freq_limit)
 	return cc;
 }
 
+// 判断PHC有没有突然走得太快、太慢，或者直接跳了一大步。
+// 如果 PHC 突然：向前跳 1 秒/向后跳 500ms/频率瞬间暴走,那 servo 继续工作是危险的
 int clockcheck_sample(struct clockcheck *cc, uint64_t ts)
 {
 	uint64_t mono_ts;
@@ -69,11 +71,11 @@ int clockcheck_sample(struct clockcheck *cc, uint64_t ts)
 	if (!cc->freq_known)
 		return ret;
 
-	interval = (int64_t)ts - cc->last_ts;
+	interval = (int64_t)ts - cc->last_ts;  // 计算两次采样之间的间隔
 	if (interval >= 0 && interval < CHECK_MIN_INTERVAL)
 		return ret;
 
-	clock_gettime(CLOCK_MONOTONIC, &now);
+	clock_gettime(CLOCK_MONOTONIC, &now);  // mono_interval = 两次检查之间，系统单调时钟（CLOCK_MONOTONIC）走了多少纳秒
 	mono_ts = now.tv_sec * 1000000000LL + now.tv_nsec;
 	mono_interval = (int64_t)mono_ts - cc->last_mono_ts;
 

@@ -82,7 +82,7 @@ struct clock_subscriber {
 struct clock {
 	enum clock_type type;  // 这个实例是什么角色：OC/BC/TC（普通钟/边界钟/透明钟）
 	struct config *config;  // 配置总表：所有你 conf/CLI 设置的东西都在这里
-	clockid_t clkid;  // 你要调哪个钟：通常是 PHC（/dev/ptpX 的 clockid），或者 CLOCK_REALTIME，free-running 时可能无效。
+	clockid_t clkid;  // Linux 内核里的 clock 句柄.通常是 PHC（/dev/ptpX 的 clockid），或者 CLOCK_REALTIME，free-running 时可能无效。
 	struct servo *servo;  // 锁定控制器对象：输入 offset/delay，输出调频/step 决策。
 	enum servo_type servo_type;  // servo 是哪一种算法：比如 PI、linreg、ntpshm 等
 	int (*dscmp)(struct dataset *a, struct dataset *b);  // 数据集比较函数指针：BMC 比较时用哪个规则（普通 1588 vs G.8275 telecom 比较）
@@ -988,7 +988,7 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 		clock_destroy(c);
 	}
 
-//step3: 校验并设置 clock 类型（OC/BC/TC
+//step3: 校验并设置 clock 类型(OC/BC/...)
 	switch (type) {
 	case CLOCK_TYPE_ORDINARY:
 	case CLOCK_TYPE_BOUNDARY:
@@ -1000,10 +1000,11 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 		return NULL;
 	}
 
-//step4: 初始化 defaultDS .defaultDS = 我这台 PTP 设备的“个人档案”,用来告诉网络里的其他设备：“我是谁？我多准？我优先级多少？我能不能当 GM？”
+//step4: 初始化 defaultDS(Default Data Set).
+    //defaultDS = 我这台 PTP 设备的“个人档案”,用来告诉网络里的其他设备：“我是谁？我多准？我优先级多少？我能不能当 GM？”
 	// 	这些字段直接参与 BMC 比较（时钟源选择）：
 	//  clockClass/accuracy/variance/priority1/priority2/localPriority 是 announce 里带出去的“我的档案”。
-	//  domainNumber 决定你跟谁在同一个 PTP 域里选主。
+	//  domainNumber 是 PTP 的“隔离编号”，相同 domain 才能选主和同步。
 	//  clock_class_threshold/maxStepsRemoved 会影响选主/可接受 GM 的规则（看你们配置）。
 	/* Initialize the defaultDS（Default Data Set）. */
 	c->dds.clockQuality.clockClass =
@@ -1116,7 +1117,7 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 	// software/legacy：没有可用 PHC，后面会走 CLOCK_REALTIME 或不调。
 	} else if (timestamping == TS_SOFTWARE || timestamping == TS_LEGACY_HW) {
 		phc_index = -1;
-	// 如果用户显式 -p /dev/ptp0：用它。
+	// 如果 user 显式指定： -p /dev/ptp0：<--------用它。
 	} else if (phc_device) {
 		if (1 != sscanf(phc_device, "/dev/ptp%d", &phc_index)) {
 			phc_index = -1;
@@ -1213,7 +1214,7 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 	c->time_source = config_get_int(config, NULL, "timeSource");
 	c->step_window = config_get_int(config, NULL, "step_window");  // step_window：通常影响什么时候 step（跳变）vs slew（渐进调频）。
 
-//step10 打开并初始化“被调的时钟”（分成三种情况：free_running / 有PHC / CLOCK_REALTIME）
+//step10 打开并初始化“被调的时钟”-----------clkid（分成三种情况：free_running / 有PHC / CLOCK_REALTIME）
 	// case 1: free_running  -> 不调时钟
 	if (c->free_running) {
 		c->clkid = CLOCK_INVALID;
@@ -1365,10 +1366,9 @@ struct clock *clock_create(enum clock_type type, struct config *config,
 		return NULL;
 	}
 
-//step16: 创建“真实网络接口”端口,
+//step16: 创建“真实网络接口”-------port,
     // “需要创建哪些 port”基本就靠 cmd 配置的 config->interfaces列表
 	// 这一步为每个 -i ethX 创建 PTP 端口：绑定 transport、时间戳模式、定时器、状态机等。
-	// 选主、收发 announce/sync/delay 都从这些 port 开始。
 
 	/* Create the ports. */
 	STAILQ_FOREACH(iface, &config->interfaces, list) {
@@ -1725,6 +1725,7 @@ void clock_set_sde(struct clock *c, int sde)
 	c->sde = sde;
 }
 
+// 等待所有端口的事件 → 分发给 port → 触发状态机 → 必要时做一次全局选主决策
 int clock_poll(struct clock *c)
 {
 	int cnt, i;
@@ -1733,7 +1734,9 @@ int clock_poll(struct clock *c)
 	struct port *p;
 
 	clock_check_pollfd(c);
-	cnt = poll(c->pollfd, (c->nports + 2) * N_CLOCK_PFD, -1);
+	cnt = poll(c->pollfd, (c->nports + 2) * N_CLOCK_PFD, -1);  // 等待所有 fd（包括每个 port 的 socket + UDS）
+                                                               // -1 表示阻塞等待,直到有数据到达
+                                                               // 这相当于：“我先睡着，谁来消息叫我。”
 	if (cnt < 0) {
 		if (EINTR == errno) {
 			return 0;
@@ -1747,8 +1750,11 @@ int clock_poll(struct clock *c)
 
 	cur = c->pollfd;
 
+	// 遍历每个 port
+	    // *_event：把“外部刺激”（收包/超时）翻译成"事件event"
+        // *_dispatch：根据"event"驱动状态机做动作
 	LIST_FOREACH(p, &c->ports, list) {
-		/* Let the ports handle their events. */
+		/* Let the ports handle their events. */  // 遍历0-11是为了判断：这个 port 的每一种“可能事件源”有没有触发。
 		for (i = 0; i < N_POLLFD; i++) {
 			if (cur[i].revents & (POLLIN|POLLPRI|POLLERR)) {
 				if (cur[i].revents & POLLERR) {
@@ -1756,15 +1762,17 @@ int clock_poll(struct clock *c)
 					       port_log_name(p));
 					event = EV_FAULT_DETECTED;
 				} else {
-					event = port_event(p, i);
+					// 当 clock_poll() 发现某个 port 的 fd 有 POLLIN，它会调用：event = port_event(p, i);
+					event = port_event(p, i);  // 报文真正进入 ptp4l 的入口, port_event → (bc_event) -> process_sync → clock_synchronize → servo_sample
 				}
 				if (EV_STATE_DECISION_EVENT == event) {
-					c->sde = 1;
+					c->sde = 1;  // sde = state decision event,意思是：“可能需要重新选主（BMC）。”
+                                 // 比如：1.收到新的 Announce 2. announce 超时 3.状态变化
 				}
 				if (EV_ANNOUNCE_RECEIPT_TIMEOUT_EXPIRES == event) {
 					c->sde = 1;
 				}
-				port_dispatch(p, event, 0);
+				port_dispatch(p, event, 0);  // 把这个事件丢给 port 的状态机处理
 				/* Clear any fault after a little while. */
 				if (PS_FAULTY == port_state(p)) {
 					clock_fault_timeout(p, 1);
@@ -1784,7 +1792,10 @@ int clock_poll(struct clock *c)
 			}
 		}
 
-		cur += N_CLOCK_PFD;
+		cur += N_CLOCK_PFD;  // 表示跳到下一个 port 的 fd 区块
+		// [port0_fd0, port0_fd1, ... port0_fdN,
+        //  port1_fd0, port1_fd1, ... port1_fdN,
+        //  ...]
 	}
 
 	/* Check the UDS ports. */
@@ -1804,6 +1815,7 @@ int clock_poll(struct clock *c)
 		}
 	}
 
+	// 所有 port 的变化统一收集后，再做一次全局选主决策。
 	if (c->sde) {
 		handle_state_decision_event(c);
 		c->sde = 0;
@@ -1917,12 +1929,16 @@ static void clock_synchronize_locked(struct clock *c, double adj)
 	}
 }
 
+// 把 PHC 往 GM 主时钟靠
 enum servo_state clock_synchronize(struct clock *c, tmv_t ingress, tmv_t origin)
 {
 	enum servo_state state = SERVO_UNLOCKED;
 	double adj, weight;
 	int64_t offset;
 
+	// step1: 一旦发生过 step/jump，就会在接下来的 N 个 Sync 样本里直接跳过调整，保持上一次的 servo_state。
+	// 这是为了避免刚 step 完就立刻被噪声/延迟样本拉着乱调。
+	//所以如果你看到频繁 JUMP，说明它要么一直在触发 step/jump，要么 step_window 很小/被打断。
 	if (c->step_window_counter) {
 		c->step_window_counter--;
 		pr_debug("skip sync after jump %d/%d",
@@ -1933,8 +1949,9 @@ enum servo_state clock_synchronize(struct clock *c, tmv_t ingress, tmv_t origin)
 
 	c->ingress_ts = ingress;
 
+	// step2: 由 tsproc 计算 offset（并可能失败）
 	tsproc_down_ts(c->tsproc, origin, ingress);
-
+    // tsproc_update_offset() 返回非 0 表示：这次样本没法形成有效 offset（例如缺 delay、滤波器还没准备好、数据不完整/不可信等）
 	if (tsproc_update_offset(c->tsproc, &c->master_offset, &weight)) {
 		if (c->free_running) {
 			return clock_no_adjust(c, ingress, origin);
@@ -1961,6 +1978,7 @@ enum servo_state clock_synchronize(struct clock *c, tmv_t ingress, tmv_t origin)
 		return state;
 	}
 
+	// step3: 调用 servo_sample() 得到 servo_state 与 adj
 	offset = tmv_to_nanoseconds(c->master_offset);
 	adj = servo_sample(c->servo, offset, tmv_to_nanoseconds(ingress),
 			   weight, &state);
@@ -1968,6 +1986,10 @@ enum servo_state clock_synchronize(struct clock *c, tmv_t ingress, tmv_t origin)
 
 	tsproc_set_clock_rate_ratio(c->tsproc, clock_rate_ratio(c));
 
+	// step4: 根据 state 对 PHC 执行动作：
+	// SERVO_JUMP → clockadj_step() / set_freq() / tsproc_reset() / step_window
+	// SERVO_LOCKED → clock_synchronize_locked()（调频）
+	// SERVO_LOCKED_STABLE →（可选）set_phase() 或继续调频
 	switch (state) {
 	case SERVO_UNLOCKED:
 		break;
@@ -2144,6 +2166,7 @@ enum clock_type clock_type(struct clock *c)
 	return c->type;
 }
 
+// 如果 PHC突然走得太快、太慢，或者直接跳了一大步，servo 继续工作是危险的，需要重置servo。
 void clock_check_ts(struct clock *c, uint64_t ts)
 {
 	if (c->sanity_check && clockcheck_sample(c->sanity_check, ts)) {
