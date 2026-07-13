@@ -18,6 +18,7 @@
  */
 #include "fsm.h"
 
+// state --- 当前状态、event --- 触发事件、mdiff --- master 是否变化
 enum port_state ptp_fsm(enum port_state state, enum fsm_event event, int mdiff)
 {
 	enum port_state next = state;

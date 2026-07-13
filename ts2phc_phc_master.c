@@ -39,7 +39,7 @@ static int ts2phc_phc_master_activate(struct config *cfg, const char *dev,
 	desc.chan = master->channel;
 
 	if (phc_pin_setfunc(master->clkid, &desc)) {
-		pr_warning("Failed to set the pin. Continuing bravely on...");
+		pr_warning("Failed to set the pin. Continuing bravely on...");  // sxn
 	}
 	if (clock_gettime(master->clkid, &ts)) {
 		perror("clock_gettime");

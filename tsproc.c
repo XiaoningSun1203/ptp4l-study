@@ -183,25 +183,35 @@ int tsproc_update_offset(struct tsproc *tsp, tmv_t *offset, double *weight)
 	tmv_t delay = tmv_zero(), raw_delay = tmv_zero();
 
 	if (tmv_is_zero(tsp->t1) || tmv_is_zero(tsp->t2))
+	{
+	    pr_err("sxn tsproc_update_offset() leave1");
 		return -1;
+	}
 
 	switch (tsp->mode) {
 	case TSPROC_FILTER:
+		pr_err("sxn tsproc_update_offset() TSPROC_FILTER");
 		if (!tsp->filtered_delay_valid) {
+			pr_err("sxn tsproc_update_offset() TSPROC_FILTER leave");
 			return -1;
 		}
 		delay = tsp->filtered_delay;
 		break;
 	case TSPROC_RAW:
+		pr_err("sxn tsproc_update_offset() TSPROC_RAW");
 	case TSPROC_RAW_WEIGHT:
+		pr_err("sxn tsproc_update_offset() TSPROC_RAW_WEIGHT");
 		if (tmv_is_zero(tsp->t3)) {
+			pr_err("sxn tsproc_update_offset() TSPROC_RAW_WEIGHT leave");
 			return -1;
 		}
 		raw_delay = get_raw_delay(tsp);
 		delay = raw_delay;
 		break;
 	case TSPROC_FILTER_WEIGHT:
+		pr_err("sxn tsproc_update_offset() TSPROC_FILTER_WEIGHT");
 		if (tmv_is_zero(tsp->t3) || !tsp->filtered_delay_valid) {
+			pr_err("sxn tsproc_update_offset() TSPROC_FILTER_WEIGHT leave");
 			return -1;
 		}
 		raw_delay = get_raw_delay(tsp);
@@ -211,9 +221,13 @@ int tsproc_update_offset(struct tsproc *tsp, tmv_t *offset, double *weight)
 
 	/* offset = t2 - t1 - delay */
 	*offset = tmv_sub(tmv_sub(tsp->t2, tsp->t1), delay);
+	pr_err("sxn tsproc_update_offset() offset = %lld\n", (long long)(*offset).ns);
 
 	if (!weight)
+	{
+		pr_err("sxn tsproc_update_offset() leave weight");
 		return 0;
+	}
 
 	if (weighting(tsp) && tmv_sign(tsp->filtered_delay) > 0 &&
 	    tmv_sign(raw_delay) > 0) {
@@ -223,9 +237,10 @@ int tsproc_update_offset(struct tsproc *tsp, tmv_t *offset, double *weight)
 	} else {
 		*weight = 1.0;
 	}
-
+	pr_err("sxn leave tsproc_update_offset()");
 	return 0;
 }
+
 
 void tsproc_reset(struct tsproc *tsp, int full)
 {

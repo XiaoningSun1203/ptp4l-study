@@ -3329,6 +3329,7 @@ enum port_state port_state(struct port *port)
 	return port->state;
 }
 
+// 真正决定 port state 如何变化
 int port_state_update(struct port *p, enum fsm_event event, int mdiff)
 {
 	enum port_state next = p->state_machine(p->state, event, mdiff);

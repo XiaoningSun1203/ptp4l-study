@@ -76,14 +76,48 @@ static double pi_sample(struct servo *servo,
 	double ki_term, ppb = s->last_freq;
 	double freq_est_interval, localdiff;
 
+// 阶段0: 收样本
+// 阶段1: 估频率
+// 阶段2: PI 控制
+                // ┌──────────────────────────┐
+                // │        count = 0         │
+                // │   (刚启动/重置状态)       │
+                // │                          │
+                // │  保存第一个 offset 样本   │
+                // │  state = UNLOCKED        │
+                // └─────────────┬────────────┘
+                //               │
+                //               ▼
+                // ┌──────────────────────────┐
+                // │        count = 1         │
+                // │  (收第二个样本估频率)     │
+                // │                          │
+                // │  若间隔不足 → UNLOCKED   │
+                // │                          │
+                // │  若 |offset| > 阈值      │
+                // │      → JUMP              │
+                // │  否则 → LOCKED          │
+                // └─────────────┬────────────┘
+                //               │
+                //               ▼
+                // ┌──────────────────────────┐
+                // │        count = 2         │
+                // │   (正常 PI 控制阶段)      │
+                // │                          │
+                // │  若 |offset| > 阈值      │
+                // │      → UNLOCKED          │
+                // │      count = 0           │
+                // │                          │
+                // │  否则 → LOCKED          │
+                // └──────────────────────────┘
 	switch (s->count) {
-	case 0:
+	case 0:                                   // 阶段 0：刚启动（count=0) : 保存第一个样本
 		s->offset[0] = offset;
 		s->local[0] = local_ts;
 		*state = SERVO_UNLOCKED;
 		s->count = 1;
 		break;
-	case 1:
+	case 1:                                   // 阶段 1：收集第二个样本（count=1）
 		s->offset[1] = offset;
 		s->local[1] = local_ts;
 
@@ -106,7 +140,7 @@ static double pi_sample(struct servo *servo,
 			break;
 		}
 
-		/* Adjust drift by the measured frequency offset. */
+		/* Adjust drift by the measured frequency offset. */  // 估计 drift（频率偏移）
 		s->drift += (1e9 - s->drift) * (s->offset[1] - s->offset[0]) /
 						(s->local[1] - s->local[0]);
 
@@ -127,7 +161,7 @@ static double pi_sample(struct servo *servo,
 		ppb = s->drift;
 		s->count = 2;
 		break;
-	case 2:
+	case 2:                                  // 阶段 2：正常 PI 控制（count=2）
 		/*
 		 * reset the clock servo when offset is greater than the max
 		 * offset value. Note that the clock jump will be performed in

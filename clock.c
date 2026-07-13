@@ -116,7 +116,7 @@ struct clock {
 	int time_source; /* grand master role */
 	UInteger8 clock_class_threshold;  // clockClass 门槛：选主/接受上游时的阈值策略（telecom profile 常用）。
 	UInteger8 max_steps_removed;  // stepsRemoved 上限：路径太“长”的 GM 可能拒绝（避免层级太深）
-	enum servo_state servo_state;  // 当前锁定状态：未锁/锁定/需要 step/刚 step（具体枚举看版本）
+	enum servo_state servo_state;  // 当前servo状态）
 	enum timestamp_type timestamping;  // 时间戳模式：硬件/软件/legacy 硬件/1step/2step。
 	tmv_t master_offset;  // 我比 master 差多少（offset，servo 最核心输入）
 	tmv_t path_delay;  // 链路时延估计（delay，用于校正 offset）
@@ -1765,9 +1765,10 @@ int clock_poll(struct clock *c)
 					// 当 clock_poll() 发现某个 port 的 fd 有 POLLIN，它会调用：event = port_event(p, i);
 					event = port_event(p, i);  // 报文真正进入 ptp4l 的入口, port_event → (bc_event) -> process_sync → clock_synchronize → servo_sample
 				}
+				// sde = state decision event,意思是：“可能需要重新选主（BMC）。”
+                    // 比如：1.收到新的 Announce 2. announce 超时 3.状态变化
 				if (EV_STATE_DECISION_EVENT == event) {
-					c->sde = 1;  // sde = state decision event,意思是：“可能需要重新选主（BMC）。”
-                                 // 比如：1.收到新的 Announce 2. announce 超时 3.状态变化
+					c->sde = 1;
 				}
 				if (EV_ANNOUNCE_RECEIPT_TIMEOUT_EXPIRES == event) {
 					c->sde = 1;
@@ -2087,14 +2088,22 @@ static void handle_state_decision_event(struct clock *c)
 	struct port *piter;
 	int fresh_best = 0;
 
+// step1: 从每个端口的 foreign masters 里找“全局最优 best master”
 	LIST_FOREACH(piter, &c->ports, list) {
-		fc = port_compute_best(piter);
+		fc = port_compute_best(piter);  // 在这个端口看到的所有外部主时钟（foreign master）里，挑一个该端口认为最好的 fc.
 		if (!fc)
 			continue;
+		// 然后跨端口再挑一个“全局最好”的 best, 比较用 c->dscmp()：你之前问过的 dataset comparison（普通1588 vs G.8275）
 		if (!best || c->dscmp(&fc->dataset, &best->dataset) > 0)
 			best = fc;
 	}
 
+// step2: 如果找不到 best_master，那么就把自己当做 best_master.
+// Feb 11 05:44:01 Apricot-APP user.notice ptp4l: [3409.852] selected local clock 34fe9e.fffe.3c00a2 as best master
+// Feb 11 05:44:01 Apricot-APP user.notice ptp4l: [3410.208] selected local clock 34fe9e.fffe.3c00a2 as best master
+// Feb 11 05:44:02 Apricot-APP user.notice ptp4l: [3410.648] selected local clock 34fe9e.fffe.3c00a2 as best master
+// Feb 11 05:44:02 Apricot-APP user.notice ptp4l: [3410.663] selected best master clock fcaf6a.fffe.02e902
+// Feb 11 05:44:02 Apricot-APP user.info ptp4l: [3410.663] updating UTC offset to 37
 	if (best) {
 		best_id = best->dataset.identity;
 	} else {
@@ -2105,29 +2114,43 @@ static void handle_state_decision_event(struct clock *c)
 		pr_notice("selected local clock %s as best master",
 			  cid2str(&best_id));
 	} else {
-		pr_notice("selected best master clock %s",
-			  cid2str(&best_id));
+		pr_notice("selected best master clock %s, sxn c->dds.clockIdentity = %s",
+			  cid2str(&best_id), cid2str(&c->dds.clockIdentity));
 	}
 
+	pr_err("sxn best_id %s, c->best_id = %s",
+			  cid2str(&best_id), cid2str(&c->best_id));
+
+// step3: 如果 best master 变了，就“重置同步相关状态”.
+    // 主时钟一变，之前所有延迟/滤波/频偏估计都不可信了，必须清空重来。
 	if (!cid_eq(&best_id, &c->best_id)) {
 		clock_freq_est_reset(c);
-		tsproc_reset(c->tsproc, 1);
+		tsproc_reset(c->tsproc, 1);  // 清空 delay/offset 滤波器内部状态
+		pr_err("sxn leave tsproc_reset(c->tsproc, 1)");
 		if (!tmv_is_zero(c->initial_delay))
 			tsproc_set_delay(c->tsproc, c->initial_delay);
 		c->ingress_ts = tmv_zero();
-		c->path_delay = c->initial_delay;
+		c->path_delay = c->initial_delay;  // path_delay 回到初值
 		c->master_local_rr = 1.0;
 		c->nrr = 1.0;
-		fresh_best = 1;
+		fresh_best = 1;  // 告诉端口“这是一个新选出来的 master”，后面 port_dispatch(..., fresh_best) 会用到.
 	}
 
 	c->best = best;
 	c->best_id = best_id;
 
+// step4: 对每个 port 做 BMC state decision，并派发状态机事件
 	LIST_FOREACH(piter, &c->ports, list) {
 		enum port_state ps;
 		enum fsm_event event;
+		// 决定该端口应该扮演什么角色
+			// 可能结果：
+			// SLAVE：跟随 best master
+			// MASTER / GRAND_MASTER：自己当主
+			// LISTENING：还没决定/等待 announce
 		ps = bmc_state_decision(c, piter, c->dscmp);
+
+		// 把 ps 转换成 event
 		switch (ps) {
 		case PS_LISTENING:
 			event = EV_NONE;
@@ -2152,6 +2175,8 @@ static void handle_state_decision_event(struct clock *c)
 			event = EV_FAULT_DETECTED;
 			break;
 		}
+
+		// 执行 event
 		port_dispatch(piter, event, fresh_best);
 	}
 }

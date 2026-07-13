@@ -53,7 +53,7 @@ struct clockcheck *clockcheck_create(int freq_limit)
 }
 
 // 判断PHC有没有突然走得太快、太慢，或者直接跳了一大步。
-// 如果 PHC 突然：向前跳 1 秒/向后跳 500ms/频率瞬间暴走,那 servo 继续工作是危险的
+// 因为如果 PHC 突然：向前跳 1 秒/向后跳 500ms/频率瞬间暴走,那 servo 继续工作是危险的
 int clockcheck_sample(struct clockcheck *cc, uint64_t ts)
 {
 	uint64_t mono_ts;
